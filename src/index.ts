@@ -4,7 +4,7 @@ import { config } from './config';
 import { connectDB } from './services/database';
 import { SearchService } from './services/search';
 import { logger } from './utils/logger';
-import { startHealthServer } from './utils/health';
+import { createHealthHandler, startStandaloneHealthServer } from './utils/health';
 
 // Middleware
 import { userTracker } from './middleware/userTracker';
@@ -31,13 +31,11 @@ async function main(): Promise<void> {
   await connectDB();
   searchService = new SearchService(bot);
 
-  const PORT = parseInt(process.env.PORT || '3000', 10);
-  startHealthServer(PORT);
-
+  // ── Middleware ──────────────────────────────────────────────────────────
   bot.use(userTracker());
   bot.use(rateLimiter());
 
-  // User commands
+  // ── User commands ───────────────────────────────────────────────────────
   bot.command('start', startCommand);
   bot.command('help', helpCommand);
   bot.command('about', aboutCommand);
@@ -46,37 +44,75 @@ async function main(): Promise<void> {
   bot.command('featured', featuredCommand);
   bot.command('search', searchCommand);
 
-  // Admin commands
+  // ── Admin commands ──────────────────────────────────────────────────────
   bot.command('helpa', adminOnly(), helpAdminCommand);
   bot.command('set', adminOnly(), setCommand);
   bot.command('db', adminOnly(), dbCommand);
   bot.command('users', adminOnly(), usersCommand);
   bot.command('broadcast', adminOnly(), broadcastCommand);
 
-  // Channel indexing
+  // ── Channel indexing ────────────────────────────────────────────────────
   bot.on('channel_post', channelPostHandler);
   bot.on('edited_channel_post', editedChannelPostHandler);
 
-  // Callbacks and text
+  // ── Callback queries & text flows ───────────────────────────────────────
   registerCallbackHandlers(bot, searchService);
   registerTextHandler(bot, searchService);
 
+  // ── Error handler ───────────────────────────────────────────────────────
   bot.catch(errorHandler);
 
+  // ── Launch ──────────────────────────────────────────────────────────────
+  const PORT = parseInt(process.env.PORT || '3000', 10);
   const WEBHOOK_DOMAIN = process.env.RENDER_EXTERNAL_URL;
 
   if (config.NODE_ENV === 'production' && WEBHOOK_DOMAIN) {
+    /**
+     * Webhook mode (Render production).
+     *
+     * Telegraf's bot.launch({ webhook }) creates the HTTP server internally
+     * and binds to PORT. We must NOT start a separate server on the same port.
+     *
+     * Instead we pass a `beforeResponse` hook so the /health route is served
+     * by the same server Telegraf owns.
+     */
     const webhookPath = `/webhook/${config.BOT_TOKEN}`;
+    const healthHandler = createHealthHandler();
+
     await bot.launch({
-      webhook: { domain: WEBHOOK_DOMAIN, path: webhookPath, port: PORT },
+      webhook: {
+        domain: WEBHOOK_DOMAIN,
+        path: webhookPath,
+        port: PORT,
+        // Telegraf calls this before processing the update, letting us
+        // intercept non-webhook requests (health checks, root pings).
+        cb: (req, res) => {
+          if (req.url === '/health' || req.url === '/') {
+            healthHandler(req, res);
+            return true; // tells Telegraf we handled it
+          }
+          return false; // let Telegraf process as webhook update
+        },
+      },
     });
-    logger.info(`Bot launched via webhook on port ${PORT}`);
+
+    logger.info(`🚀 Bot launched via webhook on port ${PORT}`);
+    logger.info(`🌐 Webhook URL: ${WEBHOOK_DOMAIN}${webhookPath}`);
+    logger.info(`🏥 Health endpoint: ${WEBHOOK_DOMAIN}/health`);
   } else {
+    /**
+     * Polling mode (local dev, or Render without RENDER_EXTERNAL_URL).
+     *
+     * Start a standalone health server first (Render needs something on PORT
+     * even in polling mode), then launch long-polling.
+     */
+    startStandaloneHealthServer(PORT);
     await bot.launch();
-    logger.info(`Bot launched in polling mode (${config.NODE_ENV})`);
+    logger.info(`🚀 Bot launched in polling mode (${config.NODE_ENV})`);
+    logger.info(`🏥 Health server on port ${PORT}`);
   }
 
-  logger.info(`ROM Finder Bot running. Admins: ${config.ADMIN_IDS.join(', ')}`);
+  logger.info(`✅ ROM Finder Bot running. Admins: ${config.ADMIN_IDS.join(', ')}`);
 
   process.once('SIGINT', () => { bot.stop('SIGINT'); process.exit(0); });
   process.once('SIGTERM', () => { bot.stop('SIGTERM'); process.exit(0); });

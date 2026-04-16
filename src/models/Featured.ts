@@ -11,6 +11,7 @@ export interface IFeatured extends Document {
 
 const featuredSchema = new Schema<IFeatured>(
   {
+    // unique:true already implies an index — removed the redundant schema.index() below
     position: { type: Number, required: true, unique: true, min: 1, max: 10 },
     title: { type: String, required: true },
     channelId: { type: String, required: true },
@@ -21,6 +22,6 @@ const featuredSchema = new Schema<IFeatured>(
   { timestamps: true }
 );
 
-featuredSchema.index({ position: 1 });
+// No extra schema.index needed — unique:true on `position` handles it
 
 export const Featured = mongoose.model<IFeatured>('Featured', featuredSchema);

@@ -10,14 +10,16 @@ export interface ISearch extends Document {
 const searchSchema = new Schema<ISearch>(
   {
     query: { type: String, required: true },
-    normalizedQuery: { type: String, required: true, unique: true, index: true },
-    count: { type: Number, default: 1, index: -1 },
+    // unique:true already creates an index — no need for index:true as well
+    normalizedQuery: { type: String, required: true, unique: true },
+    // index defined once via schema.index() below — removed inline index:-1
+    count: { type: Number, default: 1 },
     lastSearchedAt: { type: Date, default: Date.now },
   },
   { timestamps: true }
 );
 
-// Index for /top command (top 5 by count)
+// Single index declaration for /top queries
 searchSchema.index({ count: -1 });
 
 export const Search = mongoose.model<ISearch>('Search', searchSchema);
