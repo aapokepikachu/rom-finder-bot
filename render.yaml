@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: rom-finder-bot
+    env: node
+    region: oregon
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: BOT_TOKEN
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: ADMIN_IDS
+        sync: false
+      - key: CHANNELS
+        sync: false
+      - key: OWNER_USERNAME
+        sync: false
+      - key: OWNER_NAME
+        sync: false
+      - key: MAX_RESULTS
+        value: "10"
+      - key: CACHE_MAX_SIZE
+        value: "200"
+      - key: CACHE_TTL
+        value: "3600"
