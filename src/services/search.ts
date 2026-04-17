@@ -2,14 +2,15 @@ import { Telegraf } from 'telegraf';
 import Fuse from 'fuse.js';
 import { Channel } from '../models/Channel';
 import { Search } from '../models/Search';
+import { ChannelMessage } from '../models/ChannelMessage';
 import { cacheService, SearchResult, CachedResult } from './cache';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { extractCategory, normalizeQuery, buildMessageLink } from '../utils/helpers';
+import { normalizeQuery, buildMessageLink, extractCategory } from '../utils/helpers';
 
 export interface SearchOptions {
   query: string;
-  category?: string;
+  category?: string;   // a channelId when searching specific channel, or undefined = all
   userId: number;
 }
 
@@ -20,7 +21,6 @@ export interface SearchResponse {
   suggestions: string[];
 }
 
-// In-memory message index per channel (refreshed on demand)
 interface MessageIndex {
   channelId: string;
   messages: IndexedMessage[];
@@ -35,7 +35,7 @@ interface IndexedMessage {
   fileSize?: number;
 }
 
-const messageIndexes: Map<string, MessageIndex> = new Map();
+const messageIndexes = new Map<string, MessageIndex>();
 const INDEX_TTL = 30 * 60 * 1000; // 30 minutes
 
 export class SearchService {
@@ -48,38 +48,41 @@ export class SearchService {
   async search(options: SearchOptions): Promise<SearchResponse> {
     const { query, category, userId } = options;
     const normalized = normalizeQuery(query);
+    const cacheKey = category || 'ALL';
 
-    // Check cache first
-    const cached = cacheService.get(normalized, category);
+    // Cache check
+    const cached = cacheService.get(normalized, cacheKey);
     if (cached) {
-      logger.debug(`Cache HIT for query="${normalized}" category="${category}"`);
+      logger.debug(`Cache HIT query="${normalized}" channel="${cacheKey}"`);
       await this.recordSearch(query, normalized);
       return { ...cached, fromCache: true, suggestions: [] };
     }
 
-    // Determine which channels to search
-    const channelsToSearch = await this.getChannelsToSearch(category);
+    // Determine channels to search
+    const channelsToSearch = category
+      ? [category]  // specific channel ID
+      : await this.getAllChannelIds();
 
     if (channelsToSearch.length === 0) {
       return {
         bestMatch: null,
         otherMatches: [],
         fromCache: false,
-        suggestions: ['No channels configured for this category yet.'],
+        suggestions: ['No channels configured yet. Ask the admin to map channels.'],
       };
     }
 
-    // Gather messages from all relevant channels
+    // Gather all messages
     const allMessages: (IndexedMessage & { channelId: string })[] = [];
-
     for (const channelId of channelsToSearch) {
-      const messages = await this.getChannelMessages(channelId);
-      messages.forEach((m) =>
-        allMessages.push({ ...m, channelId })
-      );
+      const msgs = await this.getChannelMessages(channelId);
+      msgs.forEach((m) => allMessages.push({ ...m, channelId }));
     }
 
+    logger.debug(`Search "${normalized}": ${allMessages.length} total messages across ${channelsToSearch.length} channels`);
+
     if (allMessages.length === 0) {
+      await this.recordSearch(query, normalized);
       return {
         bestMatch: null,
         otherMatches: [],
@@ -88,16 +91,17 @@ export class SearchService {
       };
     }
 
-    // Fuzzy search with Fuse.js
+    // Fuse.js fuzzy search
     const fuse = new Fuse(allMessages, {
       keys: [
         { name: 'fileName', weight: 0.6 },
-        { name: 'caption', weight: 0.4 },
+        { name: 'caption',  weight: 0.4 },
       ],
       includeScore: true,
-      threshold: 0.5,
+      threshold: 0.55,
       minMatchCharLength: 2,
       ignoreLocation: true,
+      useExtendedSearch: false,
     });
 
     const results = fuse.search(normalized);
@@ -129,88 +133,38 @@ export class SearchService {
       bestMatch: searchResults[0],
       otherMatches: searchResults.slice(1),
       query: normalized,
-      category,
+      category: cacheKey,
       cachedAt: Date.now(),
     };
 
-    cacheService.set(normalized, category, response);
+    cacheService.set(normalized, cacheKey, response);
     await this.recordSearch(query, normalized);
 
     return { ...response, fromCache: false, suggestions: [] };
   }
 
-  private async getChannelsToSearch(category?: string): Promise<string[]> {
-    if (!category || category === 'ALL') {
-      // Return all configured channels
-      const allMapped = await Channel.find({}, 'channelId').lean();
-      const mappedIds = new Set(allMapped.map((c) => c.channelId));
-      // Also include channels from ENV that aren't mapped yet
-      const envChannels = config.CHANNELS;
-      const combined = new Set([...mappedIds, ...envChannels]);
-      return [...combined];
-    }
-
-    const channels = await Channel.find({ category }, 'channelId').lean();
-    return channels.map((c) => c.channelId);
+  private async getAllChannelIds(): Promise<string[]> {
+    // Union of ENV channels + DB-mapped channels
+    const dbChannels = await Channel.find({}, 'channelId').lean();
+    const combined = new Set([
+      ...config.CHANNELS,
+      ...dbChannels.map((c) => c.channelId),
+    ]);
+    return [...combined];
   }
 
   private async getChannelMessages(channelId: string): Promise<IndexedMessage[]> {
     const existing = messageIndexes.get(channelId);
-    const now = Date.now();
-
-    if (existing && now - existing.indexedAt < INDEX_TTL) {
+    if (existing && Date.now() - existing.indexedAt < INDEX_TTL) {
       return existing.messages;
     }
-
-    // Re-index this channel
-    const messages = await this.indexChannel(channelId);
-    messageIndexes.set(channelId, {
-      channelId,
-      messages,
-      indexedAt: now,
-    });
+    const messages = await this.loadFromDB(channelId);
+    messageIndexes.set(channelId, { channelId, messages, indexedAt: Date.now() });
+    logger.debug(`Loaded ${messages.length} messages for channel ${channelId} from DB`);
     return messages;
   }
 
-  private async indexChannel(channelId: string): Promise<IndexedMessage[]> {
-    const messages: IndexedMessage[] = [];
-    logger.debug(`Indexing channel ${channelId}...`);
-
-    try {
-      // We use getMessages by fetching forward from message ID 1
-      // In practice for large channels we do paginated fetches
-      let lastId = 0;
-      let hasMore = true;
-      const BATCH_SIZE = 100;
-
-      while (hasMore) {
-        try {
-          const batch = await this.bot.telegram.callApi('getUpdates' as any, {} as any).catch(() => []);
-
-          // Use forwardMessages approach: fetch history via channel export
-          // Telegraf doesn't natively support getHistory, so we use the Bot API's
-          // getChatHistory workaround by querying messages in the channel
-          // For channels, we copy a message and track IDs
-          hasMore = false; // Break after first attempt for safety
-        } catch {
-          hasMore = false;
-        }
-      }
-
-      // Alternative: Use forwardFrom tracking from messages the bot receives
-      // The bot must be added as admin to index messages
-      const storedMessages = await this.fetchStoredMessages(channelId);
-      return storedMessages;
-    } catch (error) {
-      logger.error(`Error indexing channel ${channelId}:`, error);
-      return messages;
-    }
-  }
-
-  private async fetchStoredMessages(channelId: string): Promise<IndexedMessage[]> {
-    // This is populated by the channel post handler (see handlers/channel.ts)
-    // Messages are stored as they come in via bot updates
-    const { ChannelMessage } = await import('../models/ChannelMessage');
+  private async loadFromDB(channelId: string): Promise<IndexedMessage[]> {
     const docs = await ChannelMessage.find(
       { channelId },
       'messageId fileName caption category fileSize'
@@ -218,10 +172,10 @@ export class SearchService {
 
     return docs.map((d) => ({
       messageId: d.messageId,
-      fileName: d.fileName,
-      caption: d.caption,
-      category: d.category,
-      fileSize: d.fileSize,
+      fileName:  d.fileName,
+      caption:   d.caption,
+      category:  d.category,
+      fileSize:  d.fileSize,
     }));
   }
 
@@ -233,45 +187,31 @@ export class SearchService {
           $inc: { count: 1 },
           $set: { query: original, lastSearchedAt: new Date() },
         },
-        { upsert: true, new: true }
+        { upsert: true }
       );
-    } catch (error) {
-      logger.warn('Failed to record search:', error);
+    } catch (err) {
+      logger.warn('Failed to record search:', err);
     }
   }
 
   private generateSuggestions(query: string): string[] {
-    const suggestions: string[] = [];
-
-    if (query.length < 3) {
-      suggestions.push('Try a longer search term (at least 3 characters)');
-    }
-    if (query.includes('.')) {
-      suggestions.push(`Try without file extension: "${query.replace(/\.[^.]+$/, '')}"`);
-    }
-    if (/^\d+$/.test(query)) {
-      suggestions.push('Try including the game title, not just numbers');
-    }
-    if (query.split(' ').length === 1) {
-      suggestions.push('Try adding more words from the title');
-    }
-
-    suggestions.push('Check the spelling of the ROM name');
-    return suggestions.slice(0, 3);
+    const s: string[] = [];
+    if (query.length < 3) s.push('Try a longer search term (at least 3 characters)');
+    if (query.includes('.')) s.push(`Try without file extension: "${query.replace(/\.[^.]+$/, '')}"`);
+    if (query.split(' ').length === 1) s.push('Try adding more words from the full title');
+    s.push('Check the spelling and try again');
+    return s.slice(0, 3);
   }
 
   clearIndex(channelId?: string): void {
-    if (channelId) {
-      messageIndexes.delete(channelId);
-    } else {
-      messageIndexes.clear();
-    }
+    if (channelId) messageIndexes.delete(channelId);
+    else messageIndexes.clear();
   }
 
   getIndexStats(): { channelId: string; messageCount: number; age: string }[] {
     const now = Date.now();
-    return [...messageIndexes.entries()].map(([channelId, idx]) => ({
-      channelId,
+    return [...messageIndexes.entries()].map(([id, idx]) => ({
+      channelId: id,
       messageCount: idx.messages.length,
       age: `${Math.floor((now - idx.indexedAt) / 60000)}m ago`,
     }));

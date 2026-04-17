@@ -10,11 +10,11 @@ import { cacheService } from '../services/cache';
 import { SearchService } from '../services/search';
 import { getSession, setSession, clearSession } from '../services/session';
 import {
-  buildCategoryAssignKeyboard,
   buildConfirmKeyboard,
   buildAdminSettingsKeyboard,
   buildDbToolsKeyboard,
   buildChannelMappingKeyboard,
+  buildFeaturedPositionKeyboard,
 } from '../utils/keyboards';
 import {
   handleDbStats,
@@ -25,7 +25,7 @@ import {
 import { executeBroadcast } from '../commands/broadcast';
 import { sendSearchResults } from '../commands/search';
 import { parseCallbackData, escapeMarkdown } from '../utils/helpers';
-import { config, CATEGORIES } from '../config';
+import { config } from '../config';
 import { logger } from '../utils/logger';
 import { isAdmin } from '../middleware/admin';
 
@@ -39,16 +39,28 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
 
     try {
       switch (action) {
-        // ── Search flow ────────────────────────────────────────────
+
+        // ── Search flow ──────────────────────────────────────────────────
         case 'search_cat': {
-          const category = payload === 'ALL' ? undefined : payload;
-          setSession(userId, { step: 'search_query', category });
-          await ctx.answerCbQuery(`Category: ${payload}`);
-          await ctx.editMessageText(
-            `🔍 Category selected: *${escapeMarkdown(payload)}*\n\n` +
-            `Now type the ROM name you're looking for:`,
-            { parse_mode: 'MarkdownV2' }
-          );
+          if (payload === 'ALL') {
+            setSession(userId, { step: 'search_query', category: undefined, categoryLabel: undefined });
+            await ctx.answerCbQuery('Searching all categories');
+            await ctx.editMessageText(
+              `🔍 *Searching all categories*\n\nType the ROM name you're looking for:`,
+              { parse_mode: 'MarkdownV2' }
+            );
+          } else {
+            // payload is a channelId — look up its label
+            const ch = await Channel.findOne({ channelId: payload }, 'category label').lean();
+            const label = ch?.label || payload;
+            const category = ch?.channelId || payload;
+            setSession(userId, { step: 'search_query', category, categoryLabel: label });
+            await ctx.answerCbQuery(`Category: ${label}`);
+            await ctx.editMessageText(
+              `🔍 Category: *${escapeMarkdown(label)}*\n\nType the ROM name you're looking for:`,
+              { parse_mode: 'MarkdownV2' }
+            );
+          }
           break;
         }
 
@@ -61,29 +73,18 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
         }
 
         case 'show_more_results': {
-          // Handled inline — other matches are sent separately
-          await ctx.answerCbQuery('Other matches shown above ⬆️');
+          await ctx.answerCbQuery('Scroll up to see other matches ⬆️');
           break;
         }
 
-        // ── Admin: Settings menu ────────────────────────────────────
+        // ── Admin: Settings menu ─────────────────────────────────────────
         case 'admin_set': {
-          if (!isAdmin(userId)) {
-            await ctx.answerCbQuery('⛔ Admins only');
-            return;
-          }
+          if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
           await ctx.answerCbQuery();
-
           switch (payload) {
-            case 'channels':
-              await handleShowChannelMapping(ctx);
-              break;
-            case 'featured':
-              await handleShowFeatured(ctx);
-              break;
-            case 'request_url':
-              await handleSetRequestUrl(ctx);
-              break;
+            case 'channels':     await handleShowChannelMapping(ctx); break;
+            case 'featured':     await handleShowFeatured(ctx);       break;
+            case 'request_url':  await handleSetRequestUrl(ctx);      break;
           }
           break;
         }
@@ -95,114 +96,58 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
           break;
         }
 
-        // ── Admin: Channel mapping ──────────────────────────────────
+        // ── Admin: Channel mapping ───────────────────────────────────────
         case 'map_channel': {
-          if (!isAdmin(userId)) {
-            await ctx.answerCbQuery('⛔ Admins only');
-            return;
-          }
+          if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
           await ctx.answerCbQuery();
 
           const channelId = payload;
-          const existing = await Channel.findOne({ channelId }, 'category').lean();
+          const existing = await Channel.findOne({ channelId }, 'category label').lean();
 
-          let text = `📡 *Channel:* \`${escapeMarkdown(channelId)}\`\n\n`;
+          // Set session so the next text message is the label
+          setSession(userId, { step: 'map_channel_label', channelId });
+
+          let text = `📡 *Mapping channel:*\n\`${escapeMarkdown(channelId)}\`\n\n`;
           if (existing) {
-            text += `Current category: *${existing.category}*\n\n`;
+            text += `Current label: *${escapeMarkdown(existing.label)}* \\(${escapeMarkdown(existing.category)}\\)\n\n`;
           }
-          text += 'Select a category to assign:';
+          text +=
+            `Please send a *short button label* for this channel\\.\n` +
+            `This will appear as a button when users do /search\\.\n\n` +
+            `Examples: \`🎮 NDS Roms\`, \`GBA Hacks\`, \`Pokemon NDS\`\n\n` +
+            `_Send /cancel to abort\\._`;
 
-          await ctx.editMessageText(text, {
-            parse_mode: 'MarkdownV2',
-            reply_markup: buildCategoryAssignKeyboard(channelId),
-          });
-          break;
-        }
-
-        case 'assign_cat': {
-          if (!isAdmin(userId)) {
-            await ctx.answerCbQuery('⛔ Admins only');
-            return;
-          }
-
-          const parts = payload.split(':');
-          const channelId = parts.slice(0, -1).join(':');
-          const category = parts[parts.length - 1] as any;
-
-          if (!CATEGORIES.includes(category)) {
-            await ctx.answerCbQuery('Invalid category');
-            return;
-          }
-
-          const existing = await Channel.findOne({ channelId }).lean();
-          if (existing) {
-            // Ask for confirmation to replace
-            await ctx.answerCbQuery();
-            await ctx.editMessageText(
-              `⚠️ Channel \`${escapeMarkdown(channelId)}\` is already mapped to *${existing.category}*\\.\n\n` +
-              `Replace with *${category}*?`,
-              {
-                parse_mode: 'MarkdownV2',
-                reply_markup: buildConfirmKeyboard('replace_cat', `${channelId}:${category}`),
-              }
-            );
-          } else {
-            await Channel.create({
-              channelId,
-              category,
-              mappedBy: userId,
-              mappedAt: new Date(),
-            });
-            cacheService.invalidate();
-            await ctx.answerCbQuery(`✅ Mapped to ${category}`);
-
-            const allChannels = config.CHANNELS;
-            const mappedChannels = await Channel.find({}).lean();
-            await ctx.editMessageText(
-              `✅ Channel \`${escapeMarkdown(channelId)}\` → *${category}*\n\nSelect another channel to map:`,
-              {
-                parse_mode: 'MarkdownV2',
-                reply_markup: buildChannelMappingKeyboard(allChannels, mappedChannels),
-              }
-            );
-          }
+          await ctx.editMessageText(text, { parse_mode: 'MarkdownV2' });
           break;
         }
 
         case 'map_back': {
-          if (!isAdmin(userId)) {
-            await ctx.answerCbQuery('⛔ Admins only');
-            return;
-          }
+          if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
           await ctx.answerCbQuery();
+          clearSession(userId);
           await handleShowChannelMapping(ctx);
           break;
         }
 
-        // ── Admin: Featured ROMs ────────────────────────────────────
+        // ── Admin: Featured ROMs ─────────────────────────────────────────
         case 'feat_pos': {
-          if (!isAdmin(userId)) {
-            await ctx.answerCbQuery('⛔ Admins only');
-            return;
-          }
+          if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
           const position = parseInt(payload, 10);
           setSession(userId, { step: 'set_featured_pick_msg', position });
           await ctx.answerCbQuery(`Position #${position} selected`);
           await ctx.editMessageText(
             `⭐ *Set Featured ROM \\#${position}*\n\n` +
-            `Forward a message from a ROM channel to set it as featured at position \\#${position}\\.\n\n` +
-            `_Or send /cancel to abort\\._`,
+            `Forward a file message from a ROM channel, or send:\n` +
+            `\`Title | \\-100xxxxxxxxxx | messageId\`\n\n` +
+            `_Send /cancel to abort\\._`,
             { parse_mode: 'MarkdownV2' }
           );
           break;
         }
 
-        // ── Admin: DB actions ───────────────────────────────────────
+        // ── Admin: DB actions ────────────────────────────────────────────
         case 'db': {
-          if (!isAdmin(userId)) {
-            await ctx.answerCbQuery('⛔ Admins only');
-            return;
-          }
+          if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
 
           switch (payload) {
             case 'stats':
@@ -213,7 +158,7 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
               const count = cacheService.invalidate();
               await ctx.answerCbQuery(`✅ Cleared ${count} cached entries`);
               await ctx.editMessageText(
-                `✅ Cache cleared\\. ${count} entries removed\\.`,
+                `✅ Cache cleared\\. *${count}* entries removed\\.`,
                 { parse_mode: 'MarkdownV2', reply_markup: buildDbToolsKeyboard() }
               );
               break;
@@ -225,7 +170,7 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
               cacheService.invalidate();
               await ctx.answerCbQuery('✅ Message index cleared');
               await ctx.editMessageText(
-                '✅ Message index cleared\\. It will be rebuilt on next search\\.',
+                '✅ Message index cleared\\. Rebuilt automatically on next search\\.',
                 { parse_mode: 'MarkdownV2', reply_markup: buildDbToolsKeyboard() }
               );
               break;
@@ -235,7 +180,7 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
               await ctx.answerCbQuery();
               await ctx.editMessageText(
                 '⚠️ *DANGER ZONE*\n\n' +
-                'This will delete ALL data:\n' +
+                'This will permanently delete:\n' +
                 '• All indexed channel messages\n' +
                 '• All search records\n' +
                 '• All featured ROMs\n' +
@@ -253,19 +198,16 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
           break;
         }
 
-        // ── Confirm actions ─────────────────────────────────────────
+        // ── Confirm actions ──────────────────────────────────────────────
         case 'confirm': {
-          if (!isAdmin(userId)) {
-            await ctx.answerCbQuery('⛔ Admins only');
-            return;
-          }
+          if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
 
-          const [confirmAction, ...confirmPayloadParts] = payload.split(':');
-          const confirmPayload = confirmPayloadParts.join(':');
+          const [confirmAction, ...rest] = payload.split(':');
+          const confirmPayload = rest.join(':');
 
           switch (confirmAction) {
             case 'delete_all_data': {
-              await ctx.answerCbQuery('🗑️ Deleting all data...');
+              await ctx.answerCbQuery('🗑️ Deleting...');
               await Promise.all([
                 ChannelMessage.deleteMany({}),
                 Search.deleteMany({}),
@@ -278,25 +220,25 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
               break;
             }
 
-            case 'replace_cat': {
-              const catParts = confirmPayload.split(':');
-              const newCategory = catParts[catParts.length - 1] as any;
-              const chanId = catParts.slice(0, -1).join(':');
-
+            case 'replace_mapping': {
+              // payload: channelId|||label  (using ||| as separator to avoid conflicts)
+              const sepIdx = confirmPayload.indexOf('|||');
+              const chanId = confirmPayload.slice(0, sepIdx);
+              const newLabel = confirmPayload.slice(sepIdx + 3);
               await Channel.findOneAndUpdate(
                 { channelId: chanId },
-                { $set: { category: newCategory, mappedBy: userId, mappedAt: new Date() } }
+                { $set: { label: newLabel, category: chanId, mappedBy: userId, mappedAt: new Date() } }
               );
               cacheService.invalidate();
-              await ctx.answerCbQuery(`✅ Updated to ${newCategory}`);
-
+              await ctx.answerCbQuery(`✅ Updated`);
+              clearSession(userId);
               const allChannels = config.CHANNELS;
               const mappedChannels = await Channel.find({}).lean();
               await ctx.editMessageText(
-                `✅ Channel mapping updated\\.\n\nSelect another channel:`,
+                `✅ Channel remapped to *${escapeMarkdown(newLabel)}*\n\nSelect another channel to map:`,
                 {
                   parse_mode: 'MarkdownV2',
-                  reply_markup: buildChannelMappingKeyboard(allChannels, mappedChannels),
+                  reply_markup: buildChannelMappingKeyboard(allChannels, mappedChannels as any),
                 }
               );
               break;
@@ -305,13 +247,9 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
           break;
         }
 
-        // ── Broadcast ───────────────────────────────────────────────
+        // ── Broadcast ────────────────────────────────────────────────────
         case 'broadcast': {
-          if (!isAdmin(userId)) {
-            await ctx.answerCbQuery('⛔ Admins only');
-            return;
-          }
-
+          if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
           if (payload === 'confirm') {
             const session = getSession(userId);
             if (session.step !== 'broadcast_confirm') {
@@ -328,8 +266,8 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
           logger.debug(`Unhandled callback: ${cq.data}`);
       }
     } catch (error) {
-      logger.error(`Callback handler error for action="${action}":`, error);
-      await ctx.answerCbQuery('❌ An error occurred. Please try again.').catch(() => {});
+      logger.error(`Callback error action="${action}" payload="${payload}":`, error);
+      await ctx.answerCbQuery('❌ Something went wrong. Please try again.').catch(() => {});
     }
   });
 }

@@ -147,7 +147,7 @@ export async function handleShowChannelMapping(ctx: Context): Promise<void> {
     `\\(✅ = already mapped\\)`,
     {
       parse_mode: 'MarkdownV2',
-      reply_markup: buildChannelMappingKeyboard(allChannels, mappedChannels),
+      reply_markup: buildChannelMappingKeyboard(allChannels, mappedChannels as any),
     }
   );
 }

@@ -1,35 +1,54 @@
 import { InlineKeyboardButton, InlineKeyboardMarkup } from 'telegraf/typings/core/types/typegram';
-import { CATEGORIES, Category } from '../config';
 import { chunk } from './helpers';
-
+import { IChannel } from '../models/Channel';
 import { SearchResult } from '../services/cache';
 
-export function buildCategoryKeyboard(selected?: string): InlineKeyboardMarkup {
-  const buttons: InlineKeyboardButton[] = CATEGORIES.map((cat) => ({
-    text: selected === cat ? `✅ ${cat}` : cat,
-    callback_data: `search_cat:${cat}`,
-  }));
+// ── Search keyboards ─────────────────────────────────────────────────────────
 
-  const notSureButton: InlineKeyboardButton = {
-    text: "🎲 I'm not sure (Search All)",
-    callback_data: 'search_cat:ALL',
-  };
+/**
+ * Build the /search category keyboard dynamically from mapped channels.
+ * Always includes "I'm not sure (Search All)" as last button.
+ * If no channels mapped yet, only shows the "Search All" button.
+ */
+export function buildSearchCategoryKeyboard(
+  mappedChannels: IChannel[]
+): InlineKeyboardMarkup {
+  const rows: InlineKeyboardButton[][] = [];
 
-  const rows = chunk(buttons, 4);
-  rows.push([notSureButton]);
+  // One button per mapped channel using admin-defined label
+  for (const ch of mappedChannels) {
+    rows.push([
+      {
+        text: ch.label,
+        callback_data: `search_cat:${ch.channelId}`,
+      },
+    ]);
+  }
+
+  // Always last
+  rows.push([
+    {
+      text: "🎲 I'm not sure (Search All)",
+      callback_data: 'search_cat:ALL',
+    },
+  ]);
 
   return { inline_keyboard: rows };
 }
 
+// ── Channel mapping keyboards ────────────────────────────────────────────────
+
 export function buildChannelMappingKeyboard(
   channels: string[],
-  mappedChannels: any[]
+  mappedChannels: IChannel[]
 ): InlineKeyboardMarkup {
-  const mappedMap = new Map(mappedChannels.map((c) => [c.channelId, c.category]));
+  const mappedMap = new Map(mappedChannels.map((c) => [c.channelId, c]));
 
   const buttons: InlineKeyboardButton[] = channels.map((chId) => {
-    const category = mappedMap.get(chId);
-    const label = category ? `✅ ${chId} → ${category}` : `⚙️ ${chId}`;
+    const mapped = mappedMap.get(chId);
+    const label = mapped
+      ? `✅ ${mapped.label} (${chId})`
+      : `⚙️ Map ${chId}`;
     return {
       text: label,
       callback_data: `map_channel:${chId}`,
@@ -42,30 +61,14 @@ export function buildChannelMappingKeyboard(
   return { inline_keyboard: rows };
 }
 
-export function buildCategoryAssignKeyboard(channelId: string): InlineKeyboardMarkup {
-  const buttons: InlineKeyboardButton[] = CATEGORIES.map((cat) => ({
-    text: cat,
-    callback_data: `assign_cat:${channelId}:${cat}`,
-  }));
-
-  const rows = chunk(buttons, 4);
-  rows.push([{ text: '⬅️ Back', callback_data: 'map_back' }]);
-
-  return { inline_keyboard: rows };
-}
+// ── Admin keyboards ──────────────────────────────────────────────────────────
 
 export function buildConfirmKeyboard(action: string, payload?: string): InlineKeyboardMarkup {
   return {
     inline_keyboard: [
       [
-        {
-          text: '✅ Yes, confirm',
-          callback_data: `confirm:${action}:${payload || ''}`,
-        },
-        {
-          text: '❌ No, cancel',
-          callback_data: 'admin_cancel',
-        },
+        { text: '✅ Yes, confirm', callback_data: `confirm:${action}:${payload || ''}` },
+        { text: '❌ No, cancel',   callback_data: 'admin_cancel' },
       ],
     ],
   };
@@ -74,10 +77,10 @@ export function buildConfirmKeyboard(action: string, payload?: string): InlineKe
 export function buildAdminSettingsKeyboard(): InlineKeyboardMarkup {
   return {
     inline_keyboard: [
-      [{ text: '⭐ Set Featured ROMs', callback_data: 'admin_set:featured' }],
-      [{ text: '📡 Map Channels to Categories', callback_data: 'admin_set:channels' }],
-      [{ text: '🔗 Set Request-It URL', callback_data: 'admin_set:request_url' }],
-      [{ text: '❌ Close', callback_data: 'admin_cancel' }],
+      [{ text: '⭐ Set Featured ROMs',         callback_data: 'admin_set:featured'     }],
+      [{ text: '📡 Map Channels to Categories', callback_data: 'admin_set:channels'     }],
+      [{ text: '🔗 Set Request-It URL',         callback_data: 'admin_set:request_url'  }],
+      [{ text: '❌ Close',                       callback_data: 'admin_cancel'           }],
     ],
   };
 }
@@ -85,14 +88,16 @@ export function buildAdminSettingsKeyboard(): InlineKeyboardMarkup {
 export function buildDbToolsKeyboard(): InlineKeyboardMarkup {
   return {
     inline_keyboard: [
-      [{ text: '📊 View Usage Stats', callback_data: 'db:stats' }],
-      [{ text: '🗑️ Delete All Data', callback_data: 'db:delete_all' }],
-      [{ text: '🧹 Clear Search Cache', callback_data: 'db:clear_cache' }],
-      [{ text: '🔄 Clear Message Index', callback_data: 'db:clear_index' }],
-      [{ text: '❌ Close', callback_data: 'admin_cancel' }],
+      [{ text: '📊 View Usage Stats',    callback_data: 'db:stats'        }],
+      [{ text: '🗑️ Delete All Data',     callback_data: 'db:delete_all'   }],
+      [{ text: '🧹 Clear Search Cache',  callback_data: 'db:clear_cache'  }],
+      [{ text: '🔄 Clear Message Index', callback_data: 'db:clear_index'  }],
+      [{ text: '❌ Close',                callback_data: 'admin_cancel'    }],
     ],
   };
 }
+
+// ── Result keyboards ─────────────────────────────────────────────────────────
 
 export function buildResultKeyboard(
   bestMatch: SearchResult,
@@ -104,7 +109,7 @@ export function buildResultKeyboard(
   ];
 
   if (otherMatches.length > 0) {
-    rows.push([{ text: '📋 Show More Results', callback_data: 'show_more_results' }]);
+    rows.push([{ text: `📋 ${otherMatches.length} More Result(s)`, callback_data: 'show_more_results' }]);
   }
 
   if (requestUrl) {
@@ -115,19 +120,13 @@ export function buildResultKeyboard(
 }
 
 export function buildRequestItKeyboard(requestUrl?: string): InlineKeyboardMarkup {
+  const rows: InlineKeyboardButton[][] = [
+    [{ text: '🔄 Try Different Search', callback_data: 'search_again' }],
+  ];
   if (requestUrl) {
-    return {
-      inline_keyboard: [
-        [{ text: '📨 Request It!', url: requestUrl }],
-        [{ text: '🔄 Try Different Search', callback_data: 'search_again' }],
-      ],
-    };
+    rows.push([{ text: '📨 Request It!', url: requestUrl }]);
   }
-  return {
-    inline_keyboard: [
-      [{ text: '🔄 Try Different Search', callback_data: 'search_again' }],
-    ],
-  };
+  return { inline_keyboard: rows };
 }
 
 export function buildFeaturedPositionKeyboard(existingPositions: number[]): InlineKeyboardMarkup {
@@ -139,15 +138,14 @@ export function buildFeaturedPositionKeyboard(existingPositions: number[]): Inli
 
   const rows = chunk(buttons, 5);
   rows.push([{ text: '❌ Cancel', callback_data: 'admin_cancel' }]);
-
   return { inline_keyboard: rows };
 }
 
 export function buildBroadcastConfirmKeyboard(): InlineKeyboardMarkup {
   return {
     inline_keyboard: [
-      [{ text: '📢 Send Broadcast', callback_data: 'broadcast:confirm' }],
-      [{ text: '❌ Cancel', callback_data: 'admin_cancel' }],
+      [{ text: '📢 Send Broadcast',  callback_data: 'broadcast:confirm' }],
+      [{ text: '❌ Cancel',           callback_data: 'admin_cancel'      }],
     ],
   };
 }

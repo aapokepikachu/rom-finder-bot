@@ -1,17 +1,14 @@
-/**
- * In-memory session store for multi-step conversation flows.
- * Keeps state per-user without needing a persistent session DB.
- */
-
 export type SessionState =
   | { step: 'idle' }
   | { step: 'search_category' }
-  | { step: 'search_query'; category?: string }
+  | { step: 'search_query'; category?: string; categoryLabel?: string }
   | { step: 'broadcast_compose' }
   | { step: 'broadcast_confirm'; message: string }
   | { step: 'set_request_url' }
   | { step: 'set_featured_pick_pos' }
   | { step: 'set_featured_pick_msg'; position: number }
+  // Channel mapping flow — now 3 steps: pick channel → enter label → confirm
+  | { step: 'map_channel_label'; channelId: string }
   | { step: 'await_more_results'; results: import('./cache').SearchResult[]; requestUrl?: string };
 
 interface SessionEntry {
@@ -22,7 +19,6 @@ interface SessionEntry {
 const sessions = new Map<number, SessionEntry>();
 const SESSION_TTL = 10 * 60 * 1000; // 10 minutes
 
-// Cleanup stale sessions every 15 minutes
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of sessions.entries()) {
