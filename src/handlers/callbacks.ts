@@ -5,13 +5,12 @@ import { Featured } from '../models/Featured';
 import { ChannelMessage } from '../models/ChannelMessage';
 import { Search } from '../models/Search';
 import { User } from '../models/User';
-import { Setting, SETTING_KEYS } from '../models/Setting';
+import { SearchFeedback } from '../models/SearchFeedback';
 import { cacheService } from '../services/cache';
 import { SearchService } from '../services/search';
 import { getSession, setSession, clearSession } from '../services/session';
 import {
   buildConfirmKeyboard,
-  buildAdminSettingsKeyboard,
   buildDbToolsKeyboard,
   buildChannelMappingKeyboard,
   buildFeaturedPositionKeyboard,
@@ -24,7 +23,7 @@ import {
 } from '../commands/admin';
 import { executeBroadcast } from '../commands/broadcast';
 import { sendSearchResults } from '../commands/search';
-import { parseCallbackData, escapeMarkdown } from '../utils/helpers';
+import { parseCallbackData, escapeMarkdown, normalizeQuery } from '../utils/helpers';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { isAdmin } from '../middleware/admin';
@@ -44,20 +43,19 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
         case 'search_cat': {
           if (payload === 'ALL') {
             setSession(userId, { step: 'search_query', category: undefined, categoryLabel: undefined });
-            await ctx.answerCbQuery('Searching all categories');
+            await ctx.answerCbQuery('Searching all channels');
             await ctx.editMessageText(
-              `🔍 *Searching all categories*\n\nType the ROM name you're looking for:`,
+              `🔍 *Searching all channels*\n\nType the ROM name you\'re looking for:`,
               { parse_mode: 'MarkdownV2' }
             );
           } else {
-            // payload is a channelId — look up its label
-            const ch = await Channel.findOne({ channelId: payload }, 'category label').lean();
-            const label = ch?.label || payload;
+            const ch = await Channel.findOne({ channelId: payload }, 'channelId label').lean();
+            const label    = ch?.label    || payload;
             const category = ch?.channelId || payload;
             setSession(userId, { step: 'search_query', category, categoryLabel: label });
             await ctx.answerCbQuery(`Category: ${label}`);
             await ctx.editMessageText(
-              `🔍 Category: *${escapeMarkdown(label)}*\n\nType the ROM name you're looking for:`,
+              `🔍 Category: *${escapeMarkdown(label)}*\n\nType the ROM name you\'re looking for:`,
               { parse_mode: 'MarkdownV2' }
             );
           }
@@ -73,18 +71,77 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
         }
 
         case 'show_more_results': {
-          await ctx.answerCbQuery('Scroll up to see other matches ⬆️');
+          await ctx.answerCbQuery('Other matches are shown above ⬆️');
+          break;
+        }
+
+        // ── Feedback ─────────────────────────────────────────────────────
+        case 'feedback': {
+          // payload format: yes:channelId:messageId:encodedQuery  OR  no:channelId:...
+          const parts = payload.split(':');
+          const vote        = parts[0];           // "yes" or "no"
+          const channelId   = parts[1];
+          const messageId   = parseInt(parts[2], 10);
+          const rawQuery    = decodeURIComponent(parts.slice(3).join(':'));
+          const normalized  = normalizeQuery(rawQuery);
+          const gotIt       = vote === 'yes';
+
+          // Get file name for reference
+          const msg = await ChannelMessage.findOne(
+            { channelId, messageId },
+            'fileName'
+          ).lean();
+
+          try {
+            await SearchFeedback.findOneAndUpdate(
+              { normalizedQuery: normalized, channelId, messageId, userId },
+              { $set: { gotIt, fileName: msg?.fileName || 'unknown' } },
+              { upsert: true }
+            );
+          } catch (e: any) {
+            // Duplicate key = already voted, just update
+            if (e.code !== 11000) throw e;
+          }
+
+          // Invalidate cache so next search picks up the boost
+          cacheService.invalidate(normalized);
+
+          if (gotIt) {
+            await ctx.answerCbQuery('✅ Great! Thanks for the feedback!');
+            await ctx.editMessageText(
+              '✅ *Glad you found it\\!* Your feedback helps improve results\\.',
+              { parse_mode: 'MarkdownV2' }
+            );
+          } else {
+            await ctx.answerCbQuery('Got it. Let\'s try again!');
+            await ctx.editMessageText(
+              `❌ *Sorry about that\\!*\n\n` +
+              `Your feedback is recorded — that result will be ranked lower next time\\.\n\n` +
+              `Would you like to search again?`,
+              {
+                parse_mode: 'MarkdownV2',
+                reply_markup: {
+                  inline_keyboard: [[
+                    { text: '🔄 Search Again', callback_data: 'search_again' },
+                  ]],
+                },
+              }
+            );
+          }
           break;
         }
 
         // ── Admin: Settings menu ─────────────────────────────────────────
         case 'admin_set': {
           if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
+          // answerCbQuery ONCE here — handler functions must NOT call it again
           await ctx.answerCbQuery();
           switch (payload) {
-            case 'channels':     await handleShowChannelMapping(ctx); break;
-            case 'featured':     await handleShowFeatured(ctx);       break;
-            case 'request_url':  await handleSetRequestUrl(ctx);      break;
+            case 'channels':    await handleShowChannelMapping(ctx); break;
+            case 'featured':    await handleShowFeatured(ctx);       break;
+            case 'request_url': await handleSetRequestUrl(ctx);      break;
+            default:
+              await ctx.editMessageText('⚠️ Unknown setting.');
           }
           break;
         }
@@ -102,18 +159,16 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
           await ctx.answerCbQuery();
 
           const channelId = payload;
-          const existing = await Channel.findOne({ channelId }, 'category label').lean();
-
-          // Set session so the next text message is the label
+          const existing  = await Channel.findOne({ channelId }, 'label').lean();
           setSession(userId, { step: 'map_channel_label', channelId });
 
           let text = `📡 *Mapping channel:*\n\`${escapeMarkdown(channelId)}\`\n\n`;
           if (existing) {
-            text += `Current label: *${escapeMarkdown(existing.label)}* \\(${escapeMarkdown(existing.category)}\\)\n\n`;
+            text += `Current label: *${escapeMarkdown(existing.label)}*\n\n`;
           }
           text +=
-            `Please send a *short button label* for this channel\\.\n` +
-            `This will appear as a button when users do /search\\.\n\n` +
+            `Send a *short button label* for this channel\\.\n` +
+            `It becomes a button in /search\\.\n\n` +
             `Examples: \`🎮 NDS Roms\`, \`GBA Hacks\`, \`Pokemon NDS\`\n\n` +
             `_Send /cancel to abort\\._`;
 
@@ -150,47 +205,44 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
           if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
 
           switch (payload) {
-            case 'stats':
+            case 'stats': {
+              // answerCbQuery ONCE — handleDbStats must NOT call it
+              await ctx.answerCbQuery();
               await handleDbStats(ctx);
               break;
-
+            }
             case 'clear_cache': {
               const count = cacheService.invalidate();
-              await ctx.answerCbQuery(`✅ Cleared ${count} cached entries`);
+              await ctx.answerCbQuery(`✅ Cleared ${count} entries`);
               await ctx.editMessageText(
-                `✅ Cache cleared\\. *${count}* entries removed\\.`,
+                `✅ Cache cleared — *${count}* entries removed\\.`,
                 { parse_mode: 'MarkdownV2', reply_markup: buildDbToolsKeyboard() }
               );
               break;
             }
-
             case 'clear_index': {
               const { searchService: svc } = await import('../index');
               svc.clearIndex();
               cacheService.invalidate();
-              await ctx.answerCbQuery('✅ Message index cleared');
+              await ctx.answerCbQuery('✅ Index cleared');
               await ctx.editMessageText(
-                '✅ Message index cleared\\. Rebuilt automatically on next search\\.',
+                '✅ Message index cleared\\. Will rebuild on next search\\.',
                 { parse_mode: 'MarkdownV2', reply_markup: buildDbToolsKeyboard() }
               );
               break;
             }
-
             case 'delete_all': {
               await ctx.answerCbQuery();
               await ctx.editMessageText(
                 '⚠️ *DANGER ZONE*\n\n' +
-                'This will permanently delete:\n' +
+                'Permanently deletes:\n' +
                 '• All indexed channel messages\n' +
-                '• All search records\n' +
+                '• All search records & feedback\n' +
                 '• All featured ROMs\n' +
                 '• All channel mappings\n' +
                 '• All user records\n\n' +
-                'This action *cannot be undone*\\!',
-                {
-                  parse_mode: 'MarkdownV2',
-                  reply_markup: buildConfirmKeyboard('delete_all_data'),
-                }
+                'This *cannot be undone*\\!',
+                { parse_mode: 'MarkdownV2', reply_markup: buildConfirmKeyboard('delete_all_data') }
               );
               break;
             }
@@ -201,9 +253,9 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
         // ── Confirm actions ──────────────────────────────────────────────
         case 'confirm': {
           if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
-
-          const [confirmAction, ...rest] = payload.split(':');
-          const confirmPayload = rest.join(':');
+          const firstColon    = payload.indexOf(':');
+          const confirmAction = firstColon >= 0 ? payload.slice(0, firstColon) : payload;
+          const confirmPayload = firstColon >= 0 ? payload.slice(firstColon + 1) : '';
 
           switch (confirmAction) {
             case 'delete_all_data': {
@@ -214,31 +266,30 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
                 Featured.deleteMany({}),
                 Channel.deleteMany({}),
                 User.deleteMany({}),
+                SearchFeedback.deleteMany({}),
               ]);
               cacheService.invalidate();
               await ctx.editMessageText('✅ All data deleted successfully.');
               break;
             }
-
             case 'replace_mapping': {
-              // payload: channelId|||label  (using ||| as separator to avoid conflicts)
-              const sepIdx = confirmPayload.indexOf('|||');
-              const chanId = confirmPayload.slice(0, sepIdx);
+              const sepIdx   = confirmPayload.indexOf('|||');
+              const chanId   = confirmPayload.slice(0, sepIdx);
               const newLabel = confirmPayload.slice(sepIdx + 3);
               await Channel.findOneAndUpdate(
                 { channelId: chanId },
                 { $set: { label: newLabel, category: chanId, mappedBy: userId, mappedAt: new Date() } }
               );
               cacheService.invalidate();
-              await ctx.answerCbQuery(`✅ Updated`);
+              await ctx.answerCbQuery('✅ Updated');
               clearSession(userId);
-              const allChannels = config.CHANNELS;
-              const mappedChannels = await Channel.find({}).lean();
+              const all     = config.CHANNELS;
+              const mapped  = await Channel.find({}).lean();
               await ctx.editMessageText(
-                `✅ Channel remapped to *${escapeMarkdown(newLabel)}*\n\nSelect another channel to map:`,
+                `✅ Channel remapped to *${escapeMarkdown(newLabel)}*\n\nSelect another channel:`,
                 {
                   parse_mode: 'MarkdownV2',
-                  reply_markup: buildChannelMappingKeyboard(allChannels, mappedChannels as any),
+                  reply_markup: buildChannelMappingKeyboard(all, mapped as any),
                 }
               );
               break;
@@ -253,7 +304,7 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
           if (payload === 'confirm') {
             const session = getSession(userId);
             if (session.step !== 'broadcast_confirm') {
-              await ctx.answerCbQuery('Session expired. Please /broadcast again.');
+              await ctx.answerCbQuery('Session expired. Use /broadcast again.');
               return;
             }
             await executeBroadcast(ctx, bot, session.message);
@@ -266,7 +317,7 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
           logger.debug(`Unhandled callback: ${cq.data}`);
       }
     } catch (error) {
-      logger.error(`Callback error action="${action}" payload="${payload}":`, error);
+      logger.error(`Callback error action="${action}":`, error);
       await ctx.answerCbQuery('❌ Something went wrong. Please try again.').catch(() => {});
     }
   });

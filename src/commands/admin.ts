@@ -1,4 +1,5 @@
 import { Context } from 'telegraf';
+import { getCollectionCounts, estimateStorageUsage } from '../services/database';
 import { User } from '../models/User';
 import { Channel } from '../models/Channel';
 import { Search } from '../models/Search';
@@ -6,8 +7,7 @@ import { Featured } from '../models/Featured';
 import { ChannelMessage } from '../models/ChannelMessage';
 import { Setting, SETTING_KEYS } from '../models/Setting';
 import { cacheService } from '../services/cache';
-import { getDBStats } from '../services/database';
-import { setSession, clearSession } from '../services/session';
+import { setSession } from '../services/session';
 import {
   buildAdminSettingsKeyboard,
   buildDbToolsKeyboard,
@@ -16,6 +16,7 @@ import {
 } from '../utils/keyboards';
 import { config } from '../config';
 import { escapeMarkdown } from '../utils/helpers';
+import { logger } from '../utils/logger';
 
 export async function helpAdminCommand(ctx: Context): Promise<void> {
   await ctx.reply(
@@ -25,9 +26,10 @@ export async function helpAdminCommand(ctx: Context): Promise<void> {
     `• /db – Database tools & stats\n` +
     `• /broadcast – Send message to all users\n` +
     `• /users – View user statistics\n` +
+    `• /backfill – Index historical channel messages\n` +
     `• /helpa – This help message\n\n` +
     `*Settings Menu \\(/set\\):*\n` +
-    `• Map channels → categories\n` +
+    `• Map channels → custom labels\n` +
     `• Set featured ROMs \\(up to 10\\)\n` +
     `• Set "Request It\\!" URL\n\n` +
     `*Database Tools \\(/db\\):*\n` +
@@ -45,20 +47,14 @@ export async function helpAdminCommand(ctx: Context): Promise<void> {
 export async function setCommand(ctx: Context): Promise<void> {
   await ctx.reply(
     '⚙️ *Settings Menu*\n\nChoose what to configure:',
-    {
-      parse_mode: 'MarkdownV2',
-      reply_markup: buildAdminSettingsKeyboard(),
-    }
+    { parse_mode: 'MarkdownV2', reply_markup: buildAdminSettingsKeyboard() }
   );
 }
 
 export async function dbCommand(ctx: Context): Promise<void> {
   await ctx.reply(
     '🗄️ *Database Tools*\n\nSelect an action:',
-    {
-      parse_mode: 'MarkdownV2',
-      reply_markup: buildDbToolsKeyboard(),
-    }
+    { parse_mode: 'MarkdownV2', reply_markup: buildDbToolsKeyboard() }
   );
 }
 
@@ -71,9 +67,7 @@ export async function usersCommand(ctx: Context): Promise<void> {
       lastActiveAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
     }),
   ]);
-
   const active = total - blocked - deleted;
-
   await ctx.reply(
     `👥 *User Statistics*\n\n` +
     `📊 Total Users: *${total}*\n` +
@@ -85,55 +79,55 @@ export async function usersCommand(ctx: Context): Promise<void> {
   );
 }
 
-// Callback: Show DB stats
+// ── These are called by callback handlers — they do NOT call answerCbQuery ──
+// The caller in callbacks.ts is responsible for answerCbQuery ONCE before calling these
+
 export async function handleDbStats(ctx: Context): Promise<void> {
-  await ctx.answerCbQuery();
-
   try {
-    const dbStats = await getDBStats();
+    const counts     = await getCollectionCounts();
+    const storage    = estimateStorageUsage(counts);
     const cacheStats = cacheService.getStats();
+    const emoji      = storage.warningLevel === 'critical' ? '🔴' : storage.warningLevel === 'warn' ? '🟡' : '🟢';
 
-    const [msgCount, userCount, searchCount] = await Promise.all([
-      ChannelMessage.countDocuments(),
-      User.countDocuments(),
-      Search.countDocuments(),
-    ]);
+    const lines: string[] = [
+      `📊 *Database Statistics*\n`,
+      `*Document Counts:*`,
+      `• 📁 Channel Messages: *${counts['ChannelMessage'] ?? 0}*`,
+      `• 👥 Users: *${counts['User'] ?? 0}*`,
+      `• 🔍 Search Records: *${counts['Search'] ?? 0}*`,
+      `• 📡 Channel Mappings: *${counts['Channel'] ?? 0}*`,
+      `• ⭐ Featured ROMs: *${counts['Featured'] ?? 0}*`,
+      `• 💬 Feedback Records: *${counts['SearchFeedback'] ?? 0}*`,
+      ``,
+      `*Storage \\(Estimated\\):*`,
+      `${emoji} ~${escapeMarkdown(storage.estimatedMB.toFixed(2))} MB / 512 MB \\(${escapeMarkdown(storage.percentUsed)}\\)`,
+      ``,
+      `*Cache \\(In\\-Memory\\):*`,
+      `• Queries cached: ${cacheStats.keys}/${cacheStats.maxSize}`,
+      `• Hit rate: ${escapeMarkdown(cacheStats.hitRate)}`,
+      `• Hits: ${cacheStats.hits} \\| Misses: ${cacheStats.misses}`,
+    ];
 
     await ctx.editMessageText(
-      `📊 *Database Statistics*\n\n` +
-      `*MongoDB:*\n` +
-      `• Collections: ${dbStats.collections}\n` +
-      `• Documents: ${dbStats.documents}\n` +
-      `• Storage: ${escapeMarkdown(dbStats.storageSize)}\n` +
-      `• Indexes: ${dbStats.indexes}\n\n` +
-      `*Collections:*\n` +
-      `• Channel Messages: ${msgCount}\n` +
-      `• Users: ${userCount}\n` +
-      `• Search Records: ${searchCount}\n\n` +
-      `*Cache \\(In\\-Memory\\):*\n` +
-      `• Cached Queries: ${cacheStats.keys}/${cacheStats.maxSize}\n` +
-      `• Hit Rate: ${escapeMarkdown(cacheStats.hitRate)}\n` +
-      `• Hits: ${cacheStats.hits} | Misses: ${cacheStats.misses}`,
-      {
-        parse_mode: 'MarkdownV2',
-        reply_markup: buildDbToolsKeyboard(),
-      }
+      lines.join('\n'),
+      { parse_mode: 'MarkdownV2', reply_markup: buildDbToolsKeyboard() }
     );
   } catch (error) {
-    await ctx.editMessageText('❌ Failed to fetch DB stats. Please try again.', {
-      reply_markup: buildDbToolsKeyboard(),
-    });
+    logger.error('handleDbStats error:', error);
+    // Fallback — no parse_mode so special chars don't break it
+    await ctx.editMessageText(
+      `Stats error: ${String(error)}`,
+      { reply_markup: buildDbToolsKeyboard() }
+    );
   }
 }
 
-// Callback: Show channel mapping UI
 export async function handleShowChannelMapping(ctx: Context): Promise<void> {
-  await ctx.answerCbQuery();
-
+  // NOTE: caller must answerCbQuery BEFORE calling this
   const allChannels = config.CHANNELS;
   if (allChannels.length === 0) {
     await ctx.editMessageText(
-      '⚠️ No channels configured in ENV\\.\n\nAdd channel IDs to `CHANNELS` in your \\.env file\\.',
+      '⚠️ No channels in `CHANNELS` env var\\.\n\nAdd channel IDs \\(comma\\-separated\\) and redeploy\\.',
       { parse_mode: 'MarkdownV2' }
     );
     return;
@@ -142,9 +136,10 @@ export async function handleShowChannelMapping(ctx: Context): Promise<void> {
   const mappedChannels = await Channel.find({}).lean();
 
   await ctx.editMessageText(
-    `📡 *Channel → Category Mapping*\n\n` +
-    `Select a channel to assign its category:\n` +
-    `\\(✅ = already mapped\\)`,
+    `📡 *Channel Mapping*\n\n` +
+    `Tap a channel to set its label\\.\n` +
+    `The label becomes a button in /search\\.\n` +
+    `✅ = already mapped`,
     {
       parse_mode: 'MarkdownV2',
       reply_markup: buildChannelMappingKeyboard(allChannels, mappedChannels as any),
@@ -152,10 +147,8 @@ export async function handleShowChannelMapping(ctx: Context): Promise<void> {
   );
 }
 
-// Callback: Show featured management
 export async function handleShowFeatured(ctx: Context): Promise<void> {
-  await ctx.answerCbQuery();
-
+  // NOTE: caller must answerCbQuery BEFORE calling this
   const featured = await Featured.find({}).sort({ position: 1 }).lean();
   const existingPositions = featured.map((f) => f.position);
 
@@ -176,10 +169,8 @@ export async function handleShowFeatured(ctx: Context): Promise<void> {
   });
 }
 
-// Callback: Show Request URL setting
 export async function handleSetRequestUrl(ctx: Context): Promise<void> {
-  await ctx.answerCbQuery();
-
+  // NOTE: caller must answerCbQuery BEFORE calling this
   const setting = await Setting.findOne({ key: SETTING_KEYS.REQUEST_URL }).lean();
   const current = setting?.value;
 
@@ -188,7 +179,7 @@ export async function handleSetRequestUrl(ctx: Context): Promise<void> {
   await ctx.editMessageText(
     `🔗 *Set Request\\-It URL*\n\n` +
     `Current: ${current ? escapeMarkdown(current) : '_Not set_'}\n\n` +
-    `Send the new URL \\(e\\.g\\. a Google Form or Telegram group link\\):`,
+    `Send the new URL \\(e\\.g\\. a Google Form or Telegram group\\):`,
     { parse_mode: 'MarkdownV2' }
   );
 }
