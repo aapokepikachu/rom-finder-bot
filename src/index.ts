@@ -18,7 +18,7 @@ import { topCommand, featuredCommand }  from './commands/discovery';
 import { searchCommand }                from './commands/search';
 import { helpAdminCommand, setCommand, dbCommand, usersCommand } from './commands/admin';
 import { broadcastCommand }             from './commands/broadcast';
-import { backfillCommand, runBackfill } from './commands/backfill';
+import { backfillCommand } from './commands/backfill';
 
 // Handlers
 import { channelPostHandler, editedChannelPostHandler } from './handlers/channel';
@@ -61,11 +61,6 @@ async function main(): Promise<void> {
   registerCallbackHandlers(bot, searchService);
   registerTextHandler(bot, searchService);
 
-  // Wire backfill callback here so it has access to `bot`
-  bot.action(/^backfill_chan:(.+)$/, adminOnly(), async (ctx) => {
-    const channelId = (ctx.match as RegExpMatchArray)[1];
-    await runBackfill(ctx, bot, channelId);
-  });
 
   bot.catch(errorHandler);
 

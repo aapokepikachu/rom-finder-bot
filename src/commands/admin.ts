@@ -15,46 +15,54 @@ import {
   buildFeaturedPositionKeyboard,
 } from '../utils/keyboards';
 import { config } from '../config';
-import { escapeMarkdown } from '../utils/helpers';
 import { logger } from '../utils/logger';
+
+// Use HTML parse mode throughout — far more forgiving than MarkdownV2.
+// MarkdownV2 breaks on ~, >, #, +, -, =, |, {, }, (, ), . unless all escaped.
+
+function esc(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
 
 export async function helpAdminCommand(ctx: Context): Promise<void> {
   await ctx.reply(
-    `🔧 *Admin Command Guide*\n\n` +
-    `*Settings & Config:*\n` +
-    `• /set – Open settings menu\n` +
-    `• /db – Database tools & stats\n` +
-    `• /broadcast – Send message to all users\n` +
-    `• /users – View user statistics\n` +
-    `• /backfill – Index historical channel messages\n` +
-    `• /helpa – This help message\n\n` +
-    `*Settings Menu \\(/set\\):*\n` +
-    `• Map channels → custom labels\n` +
-    `• Set featured ROMs \\(up to 10\\)\n` +
-    `• Set "Request It\\!" URL\n\n` +
-    `*Database Tools \\(/db\\):*\n` +
-    `• View DB & cache stats\n` +
-    `• Clear search cache\n` +
-    `• Delete all data \\(with confirmation\\)\n\n` +
-    `*Broadcast \\(/broadcast\\):*\n` +
-    `• Sends to all active users\n` +
-    `• Skips blocked/deleted accounts\n` +
-    `• Reports delivery stats`,
-    { parse_mode: 'MarkdownV2' }
+    `🔧 <b>Admin Command Guide</b>\n\n` +
+    `<b>Commands:</b>\n` +
+    `• /set – Settings menu\n` +
+    `• /db – Database tools\n` +
+    `• /broadcast – Message all users\n` +
+    `• /users – User statistics\n` +
+    `• /backfill – Index historical channel files\n` +
+    `• /helpa – This help\n\n` +
+    `<b>Settings (/set):</b>\n` +
+    `• Map channels → search buttons\n` +
+    `• Set featured ROMs (up to 10)\n` +
+    `• Set "Request It!" URL\n\n` +
+    `<b>DB Tools (/db):</b>\n` +
+    `• Usage stats (works on Atlas M0)\n` +
+    `• Clear cache / index\n` +
+    `• Delete all data\n\n` +
+    `<b>Backfill (/backfill):</b>\n` +
+    `• Scans old channel messages\n` +
+    `• Indexes files not seen live`,
+    { parse_mode: 'HTML' }
   );
 }
 
 export async function setCommand(ctx: Context): Promise<void> {
   await ctx.reply(
-    '⚙️ *Settings Menu*\n\nChoose what to configure:',
-    { parse_mode: 'MarkdownV2', reply_markup: buildAdminSettingsKeyboard() }
+    '⚙️ <b>Settings Menu</b>\n\nChoose what to configure:',
+    { parse_mode: 'HTML', reply_markup: buildAdminSettingsKeyboard() }
   );
 }
 
 export async function dbCommand(ctx: Context): Promise<void> {
   await ctx.reply(
-    '🗄️ *Database Tools*\n\nSelect an action:',
-    { parse_mode: 'MarkdownV2', reply_markup: buildDbToolsKeyboard() }
+    '🗄️ <b>Database Tools</b>\n\nSelect an action:',
+    { parse_mode: 'HTML', reply_markup: buildDbToolsKeyboard() }
   );
 }
 
@@ -69,66 +77,63 @@ export async function usersCommand(ctx: Context): Promise<void> {
   ]);
   const active = total - blocked - deleted;
   await ctx.reply(
-    `👥 *User Statistics*\n\n` +
-    `📊 Total Users: *${total}*\n` +
-    `✅ Active Users: *${active}*\n` +
-    `🕐 Active Today: *${activeToday}*\n` +
-    `🚫 Blocked Bot: *${blocked}*\n` +
-    `🗑️ Deleted Accounts: *${deleted}*`,
-    { parse_mode: 'MarkdownV2' }
+    `👥 <b>User Statistics</b>\n\n` +
+    `📊 Total: <b>${total}</b>\n` +
+    `✅ Active: <b>${active}</b>\n` +
+    `🕐 Active today: <b>${activeToday}</b>\n` +
+    `🚫 Blocked bot: <b>${blocked}</b>\n` +
+    `🗑️ Deleted accounts: <b>${deleted}</b>`,
+    { parse_mode: 'HTML' }
   );
 }
 
-// ── These are called by callback handlers — they do NOT call answerCbQuery ──
-// The caller in callbacks.ts is responsible for answerCbQuery ONCE before calling these
+// ── Called by callback handler — caller already called answerCbQuery() ───────
 
 export async function handleDbStats(ctx: Context): Promise<void> {
+  // NOTE: Atlas M0 does NOT support db.stats(). We use countDocuments() only.
   try {
     const counts     = await getCollectionCounts();
     const storage    = estimateStorageUsage(counts);
     const cacheStats = cacheService.getStats();
-    const emoji      = storage.warningLevel === 'critical' ? '🔴' : storage.warningLevel === 'warn' ? '🟡' : '🟢';
+    const emoji      = storage.warningLevel === 'critical' ? '🔴'
+                     : storage.warningLevel === 'warn'     ? '🟡' : '🟢';
 
-    const lines: string[] = [
-      `📊 *Database Statistics*\n`,
-      `*Document Counts:*`,
-      `• 📁 Channel Messages: *${counts['ChannelMessage'] ?? 0}*`,
-      `• 👥 Users: *${counts['User'] ?? 0}*`,
-      `• 🔍 Search Records: *${counts['Search'] ?? 0}*`,
-      `• 📡 Channel Mappings: *${counts['Channel'] ?? 0}*`,
-      `• ⭐ Featured ROMs: *${counts['Featured'] ?? 0}*`,
-      `• 💬 Feedback Records: *${counts['SearchFeedback'] ?? 0}*`,
-      ``,
-      `*Storage \\(Estimated\\):*`,
-      `${emoji} ~${escapeMarkdown(storage.estimatedMB.toFixed(2))} MB / 512 MB \\(${escapeMarkdown(storage.percentUsed)}\\)`,
-      ``,
-      `*Cache \\(In\\-Memory\\):*`,
-      `• Queries cached: ${cacheStats.keys}/${cacheStats.maxSize}`,
-      `• Hit rate: ${escapeMarkdown(cacheStats.hitRate)}`,
-      `• Hits: ${cacheStats.hits} \\| Misses: ${cacheStats.misses}`,
-    ];
+    const text =
+      `📊 <b>Database Statistics</b>\n\n` +
+      `<b>Document Counts:</b>\n` +
+      `• 📁 Channel Messages: <b>${counts['ChannelMessage'] ?? 0}</b>\n` +
+      `• 👥 Users: <b>${counts['User'] ?? 0}</b>\n` +
+      `• 🔍 Search Records: <b>${counts['Search'] ?? 0}</b>\n` +
+      `• 📡 Channel Mappings: <b>${counts['Channel'] ?? 0}</b>\n` +
+      `• ⭐ Featured ROMs: <b>${counts['Featured'] ?? 0}</b>\n` +
+      `• 💬 Feedback: <b>${counts['SearchFeedback'] ?? 0}</b>\n\n` +
+      `<b>Storage (estimated):</b>\n` +
+      `${emoji} ~${storage.estimatedMB.toFixed(2)} MB / 512 MB (${storage.percentUsed})\n\n` +
+      `<b>Cache (in-memory):</b>\n` +
+      `• Queries cached: ${cacheStats.keys}/${cacheStats.maxSize}\n` +
+      `• Hit rate: ${cacheStats.hitRate}\n` +
+      `• Hits: ${cacheStats.hits} | Misses: ${cacheStats.misses}`;
 
-    await ctx.editMessageText(
-      lines.join('\n'),
-      { parse_mode: 'MarkdownV2', reply_markup: buildDbToolsKeyboard() }
-    );
+    await ctx.editMessageText(text, {
+      parse_mode: 'HTML',
+      reply_markup: buildDbToolsKeyboard(),
+    });
   } catch (error) {
     logger.error('handleDbStats error:', error);
-    // Fallback — no parse_mode so special chars don't break it
     await ctx.editMessageText(
-      `Stats error: ${String(error)}`,
-      { reply_markup: buildDbToolsKeyboard() }
+      `❌ Stats error:\n<code>${esc(String(error))}</code>`,
+      { parse_mode: 'HTML', reply_markup: buildDbToolsKeyboard() }
     );
   }
 }
 
 export async function handleShowChannelMapping(ctx: Context): Promise<void> {
-  // NOTE: caller must answerCbQuery BEFORE calling this
   const allChannels = config.CHANNELS;
   if (allChannels.length === 0) {
     await ctx.editMessageText(
-      '⚠️ No channels in `CHANNELS` env var\\.\n\nAdd channel IDs \\(comma\\-separated\\) and redeploy\\.',
-      { parse_mode: 'MarkdownV2' }
+      '⚠️ No channels found in the <code>CHANNELS</code> environment variable.\n\n' +
+      'Add comma-separated channel IDs to your Render environment and redeploy.',
+      { parse_mode: 'HTML' }
     );
     return;
   }
@@ -136,50 +141,49 @@ export async function handleShowChannelMapping(ctx: Context): Promise<void> {
   const mappedChannels = await Channel.find({}).lean();
 
   await ctx.editMessageText(
-    `📡 *Channel Mapping*\n\n` +
-    `Tap a channel to set its label\\.\n` +
-    `The label becomes a button in /search\\.\n` +
+    `📡 <b>Channel Mapping</b>\n\n` +
+    `Tap a channel button to set its label.\n` +
+    `That label becomes a search button in /search.\n` +
     `✅ = already mapped`,
     {
-      parse_mode: 'MarkdownV2',
+      parse_mode: 'HTML',
       reply_markup: buildChannelMappingKeyboard(allChannels, mappedChannels as any),
     }
   );
 }
 
 export async function handleShowFeatured(ctx: Context): Promise<void> {
-  // NOTE: caller must answerCbQuery BEFORE calling this
-  const featured = await Featured.find({}).sort({ position: 1 }).lean();
+  const featured          = await Featured.find({}).sort({ position: 1 }).lean();
   const existingPositions = featured.map((f) => f.position);
 
-  let text = `⭐ *Manage Featured ROMs*\n\n`;
+  let text = `⭐ <b>Manage Featured ROMs</b>\n\n`;
   if (featured.length === 0) {
-    text += '_No featured ROMs set yet\\._\n\n';
+    text += '<i>No featured ROMs set yet.</i>\n\n';
   } else {
     featured.forEach((f) => {
-      text += `${f.position}\\. ${escapeMarkdown(f.title)}\n`;
+      text += `${f.position}. ${esc(f.title)}\n`;
     });
     text += '\n';
   }
-  text += 'Select a position to set/replace:';
+  text += 'Select a position to set or replace:';
 
   await ctx.editMessageText(text, {
-    parse_mode: 'MarkdownV2',
+    parse_mode: 'HTML',
     reply_markup: buildFeaturedPositionKeyboard(existingPositions),
   });
 }
 
 export async function handleSetRequestUrl(ctx: Context): Promise<void> {
-  // NOTE: caller must answerCbQuery BEFORE calling this
   const setting = await Setting.findOne({ key: SETTING_KEYS.REQUEST_URL }).lean();
   const current = setting?.value;
 
   setSession(ctx.from!.id, { step: 'set_request_url' });
 
   await ctx.editMessageText(
-    `🔗 *Set Request\\-It URL*\n\n` +
-    `Current: ${current ? escapeMarkdown(current) : '_Not set_'}\n\n` +
-    `Send the new URL \\(e\\.g\\. a Google Form or Telegram group\\):`,
-    { parse_mode: 'MarkdownV2' }
+    `🔗 <b>Set Request-It URL</b>\n\n` +
+    `Current: ${current ? `<code>${esc(current)}</code>` : '<i>Not set</i>'}\n\n` +
+    `Send the new URL (e.g. a Google Form or group link).\n` +
+    `<i>Send /cancel to abort.</i>`,
+    { parse_mode: 'HTML' }
   );
 }

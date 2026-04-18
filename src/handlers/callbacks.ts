@@ -22,6 +22,7 @@ import {
   handleSetRequestUrl,
 } from '../commands/admin';
 import { executeBroadcast } from '../commands/broadcast';
+import { runBackfill } from '../commands/backfill';
 import { sendSearchResults } from '../commands/search';
 import { parseCallbackData, escapeMarkdown, normalizeQuery } from '../utils/helpers';
 import { config } from '../config';
@@ -309,6 +310,15 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
             }
             await executeBroadcast(ctx, bot, session.message);
           }
+          break;
+        }
+
+        // ── Backfill ─────────────────────────────────────────────────────
+        case 'backfill_start': {
+          if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
+          await ctx.answerCbQuery('🔄 Starting backfill...');
+          await ctx.deleteMessage().catch(() => {});
+          await runBackfill(ctx, bot, payload);
           break;
         }
 

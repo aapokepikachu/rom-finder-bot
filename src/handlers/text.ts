@@ -12,15 +12,18 @@ import {
   buildChannelMappingKeyboard,
   buildConfirmKeyboard,
 } from '../utils/keyboards';
-import { escapeMarkdown } from '../utils/helpers';
 import { logger } from '../utils/logger';
 import { isAdmin } from '../middleware/admin';
 import { config } from '../config';
 
+function esc(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 export function registerTextHandler(bot: Telegraf, searchService: SearchService): void {
 
   bot.on('text', async (ctx) => {
-    const text = ctx.message.text.trim();
+    const text   = ctx.message.text.trim();
     const userId = ctx.from.id;
 
     if (text === '/cancel') {
@@ -33,7 +36,7 @@ export function registerTextHandler(bot: Telegraf, searchService: SearchService)
 
     switch (session.step) {
 
-      // ── Search: receive ROM name ────────────────────────────────────────
+      // ── Search: ROM name entry ─────────────────────────────────────────
       case 'search_query': {
         if (text.startsWith('/')) break;
         if (text.length < 2) {
@@ -44,24 +47,18 @@ export function registerTextHandler(bot: Telegraf, searchService: SearchService)
           await ctx.reply('⚠️ Search query is too long. Please shorten it.');
           return;
         }
-        await sendSearchResults(
-          ctx,
-          searchService,
-          text,
-          session.category,
-          session.categoryLabel
-        );
+        await sendSearchResults(ctx, searchService, text, session.category, session.categoryLabel);
         return;
       }
 
-      // ── Admin: channel label input ─────────────────────────────────────
+      // ── Admin: channel label entry ─────────────────────────────────────
       case 'map_channel_label': {
         if (!isAdmin(userId)) break;
         if (text.startsWith('/')) break;
 
         const label = text.trim();
         if (label.length < 1 || label.length > 50) {
-          await ctx.reply('⚠️ Label must be between 1 and 50 characters. Try again:');
+          await ctx.reply('⚠️ Label must be 1–50 characters. Try again:');
           return;
         }
 
@@ -69,21 +66,19 @@ export function registerTextHandler(bot: Telegraf, searchService: SearchService)
         const existing = await Channel.findOne({ channelId }, 'label').lean();
 
         if (existing) {
-          // Confirm replacement
           setSession(userId, { step: 'idle' });
           await ctx.reply(
-            `⚠️ This channel is already mapped as *${escapeMarkdown(existing.label)}*\\.\n\n` +
-            `Replace with *${escapeMarkdown(label)}*?`,
+            `⚠️ Channel already mapped as <b>${esc(existing.label)}</b>\n\n` +
+            `Replace with <b>${esc(label)}</b>?`,
             {
-              parse_mode: 'MarkdownV2',
+              parse_mode: 'HTML',
               reply_markup: buildConfirmKeyboard('replace_mapping', `${channelId}|||${label}`),
             }
           );
         } else {
-          // Save new mapping
           await Channel.create({
             channelId,
-            category: channelId,   // use channelId as internal category key
+            category: channelId,
             label,
             mappedBy: userId,
             mappedAt: new Date(),
@@ -91,23 +86,23 @@ export function registerTextHandler(bot: Telegraf, searchService: SearchService)
           cacheService.invalidate();
           clearSession(userId);
 
-          logger.info(`Admin ${userId} mapped channel ${channelId} → "${label}"`);
+          logger.info(`Admin ${userId} mapped ${channelId} → "${label}"`);
 
-          const allChannels = config.CHANNELS;
+          await ctx.reply(
+            `✅ <b>Channel mapped!</b>\n\n` +
+            `📡 Channel: <code>${esc(channelId)}</code>\n` +
+            `🏷️ Label: <b>${esc(label)}</b>\n\n` +
+            `This label appears as a button in /search.`,
+            { parse_mode: 'HTML' }
+          );
+
+          const allChannels    = config.CHANNELS;
           const mappedChannels = await Channel.find({}).lean();
 
           await ctx.reply(
-            `✅ Channel mapped\\!\n\n` +
-            `📡 Channel: \`${escapeMarkdown(channelId)}\`\n` +
-            `🏷️ Label: *${escapeMarkdown(label)}*\n\n` +
-            `This label will appear as a button in /search\\.`,
-            { parse_mode: 'MarkdownV2' }
-          );
-
-          await ctx.reply(
-            '📡 *Channel Mappings*\n\nSelect another channel to map, or press Cancel:',
+            '📡 <b>Channel Mappings</b>\n\nSelect another channel to map, or press Cancel:',
             {
-              parse_mode: 'MarkdownV2',
+              parse_mode: 'HTML',
               reply_markup: buildChannelMappingKeyboard(allChannels, mappedChannels as any),
             }
           );
@@ -115,7 +110,7 @@ export function registerTextHandler(bot: Telegraf, searchService: SearchService)
         return;
       }
 
-      // ── Admin: broadcast compose ────────────────────────────────────────
+      // ── Admin: broadcast compose ───────────────────────────────────────
       case 'broadcast_compose': {
         if (!isAdmin(userId)) break;
         if (text.startsWith('/')) break;
@@ -123,7 +118,7 @@ export function registerTextHandler(bot: Telegraf, searchService: SearchService)
         return;
       }
 
-      // ── Admin: Request-It URL ───────────────────────────────────────────
+      // ── Admin: set Request-It URL ──────────────────────────────────────
       case 'set_request_url': {
         if (!isAdmin(userId)) break;
         if (!text.startsWith('http')) {
@@ -137,13 +132,13 @@ export function registerTextHandler(bot: Telegraf, searchService: SearchService)
         );
         clearSession(userId);
         await ctx.reply(
-          `✅ Request\\-It URL updated:\n${escapeMarkdown(text)}`,
-          { parse_mode: 'MarkdownV2' }
+          `✅ <b>Request-It URL updated:</b>\n<code>${esc(text)}</code>`,
+          { parse_mode: 'HTML' }
         );
         return;
       }
 
-      // ── Admin: featured ROM pick ────────────────────────────────────────
+      // ── Admin: featured ROM text input ─────────────────────────────────
       case 'set_featured_pick_msg': {
         if (!isAdmin(userId)) break;
         await handleFeaturedTextInput(ctx, session.position, text, userId);
@@ -157,16 +152,15 @@ export function registerTextHandler(bot: Telegraf, searchService: SearchService)
 
   // ── Forwarded messages for featured ROM selection ──────────────────────
   bot.on('message', async (ctx) => {
-    const msg = ctx.message as any;
+    const msg    = ctx.message as any;
     const userId = ctx.from?.id;
     if (!userId || !isAdmin(userId)) return;
 
     const session = getSession(userId);
     if (session.step !== 'set_featured_pick_msg') return;
 
-    const forwardOrigin  = msg.forward_origin;
-    const forwardFromChat = msg.forward_from_chat;
-
+    const forwardFromChat  = msg.forward_from_chat;
+    const forwardOrigin    = msg.forward_origin;
     const channelId =
       forwardFromChat?.id?.toString() ||
       forwardOrigin?.chat?.id?.toString();
@@ -174,11 +168,11 @@ export function registerTextHandler(bot: Telegraf, searchService: SearchService)
       msg.forward_from_message_id ||
       forwardOrigin?.message_id;
 
-    if (!channelId || !messageId) return; // not a forwarded channel message
+    if (!channelId || !messageId) return;
 
     const caption: string = msg.caption || '';
     const docName: string = msg.document?.file_name || '';
-    const title = docName || caption.split('\n')[0] || `ROM #${messageId}`;
+    const title           = docName || caption.split('\n')[0] || `ROM #${messageId}`;
 
     await saveFeatured(ctx, session.position, title, channelId, messageId, userId);
   });
@@ -190,15 +184,14 @@ async function handleFeaturedTextInput(
   text: string,
   userId: number
 ): Promise<void> {
-  // Manual format: "Title | -1001234567890 | 12345"
   const parts = text.split('|').map((s) => s.trim());
   if (parts.length === 3) {
     const [title, channelId, msgIdStr] = parts;
     const messageId = parseInt(msgIdStr, 10);
     if (!title || !channelId.startsWith('-100') || isNaN(messageId)) {
       await ctx.reply(
-        '⚠️ Invalid format\\. Use:\n`Title | \\-100xxxxxxxxxx | messageId`',
-        { parse_mode: 'MarkdownV2' }
+        '⚠️ Invalid format. Use:\n<code>Title | -100xxxxxxxxxx | messageId</code>',
+        { parse_mode: 'HTML' }
       );
       return;
     }
@@ -206,8 +199,9 @@ async function handleFeaturedTextInput(
     return;
   }
   await ctx.reply(
-    '⚠️ Please forward a message from a ROM channel, or send:\n`Title | channelId | messageId`',
-    { parse_mode: 'MarkdownV2' }
+    '⚠️ Please forward a message from a ROM channel, or send:\n' +
+    '<code>Title | channelId | messageId</code>',
+    { parse_mode: 'HTML' }
   );
 }
 
@@ -219,30 +213,30 @@ async function saveFeatured(
   messageId: number,
   userId: number
 ): Promise<void> {
-  const channelMapping = await Channel.findOne({ channelId }, 'label').lean();
+  const mapping = await Channel.findOne({ channelId }, 'label').lean();
 
   await Featured.findOneAndUpdate(
     { position },
     {
       $set: {
-        title: title.slice(0, 100),
+        title:     title.slice(0, 100),
         channelId,
         messageId,
-        category: channelMapping?.label,
-        addedBy: userId,
+        category:  mapping?.label,
+        addedBy:   userId,
       },
     },
     { upsert: true }
   );
 
   clearSession(userId);
-  logger.info(`Featured #${position} set by admin ${userId}: "${title}"`);
+  logger.info(`Featured #${position} set: "${title}"`);
 
   await ctx.reply(
-    `✅ *Featured \\#${position} updated\\!*\n\n` +
-    `📁 *${escapeMarkdown(title)}*\n` +
-    `📡 Channel: \`${escapeMarkdown(channelId)}\`\n` +
+    `✅ <b>Featured #${position} updated!</b>\n\n` +
+    `📁 ${esc(title)}\n` +
+    `📡 Channel: <code>${esc(channelId)}</code>\n` +
     `🔢 Message ID: ${messageId}`,
-    { parse_mode: 'MarkdownV2' }
+    { parse_mode: 'HTML' }
   );
 }
