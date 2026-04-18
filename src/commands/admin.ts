@@ -36,6 +36,8 @@ export async function helpAdminCommand(ctx: Context): Promise<void> {
     `• /broadcast – Message all users\n` +
     `• /users – User statistics\n` +
     `• /backfill – Index historical channel files\n` +
+    `• /maintenance – Toggle maintenance mode\n` +
+    `• /unindex – Remove files from search index\n` +
     `• /helpa – This help\n\n` +
     `<b>Settings (/set):</b>\n` +
     `• Map channels → search buttons\n` +
@@ -47,7 +49,15 @@ export async function helpAdminCommand(ctx: Context): Promise<void> {
     `• Delete all data\n\n` +
     `<b>Backfill (/backfill):</b>\n` +
     `• Scans old channel messages\n` +
-    `• Indexes files not seen live`,
+    `• Indexes files not seen live\n\n` +
+    `<b>Maintenance (/maintenance):</b>\n` +
+    `• Blocks all users while ON\n` +
+    `• Admins always pass through\n` +
+    `• Useful during /backfill or updates\n\n` +
+    `<b>Unindex (/unindex):</b>\n` +
+    `• Block a tag — skip files with that caption tag\n` +
+    `• Unindex a file — forward it to remove from index\n` +
+    `• View/remove blocked tags`,
     { parse_mode: 'HTML' }
   );
 }

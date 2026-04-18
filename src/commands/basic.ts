@@ -48,18 +48,21 @@ export async function helpCommand(ctx: Context): Promise<void> {
 }
 
 export async function aboutCommand(ctx: Context): Promise<void> {
-  const ownerLink      = `<a href="https://t.me/${esc(config.OWNER_HANDLE)}">${esc(config.OWNER_NAME)}</a>`;
-  const sourceCodeLink = `<a href="${esc(config.SOURCE_CODE_URL)}">GitHub</a>`;
+  const ownerLink = `<a href="https://t.me/${esc(config.OWNER_HANDLE)}">${esc(config.OWNER_NAME)}</a>`;
 
   await ctx.reply(
     `ℹ️ <b>About ROM Finder</b>\n\n` +
-    `A Telegram bot that searches ROM files across multiple channels using fuzzy matching and user feedback.\n\n` +
+    `A Telegram bot that searches ROM files across multiple channels using fuzzy matching and user-feedback-driven ranking.\n\n` +
     `👤 <b>Made by:</b> @PokemonBots\n` +
-    `🧑‍💻 <b>Owner:</b> ${ownerLink}\n` +
-    `📦 <b>Source Code:</b> ${sourceCodeLink}`,
+    `🧑‍💻 <b>Owner:</b> ${ownerLink}`,
     {
       parse_mode: 'HTML',
       link_preview_options: { is_disabled: true },
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '📦 Source Code', callback_data: 'about_source' }],
+        ],
+      },
     }
   );
 }

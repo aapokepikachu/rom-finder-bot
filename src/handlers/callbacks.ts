@@ -47,6 +47,23 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
     try {
       switch (action) {
 
+        // About: Source Code popup
+        case 'about_source': {
+          await ctx.answerCbQuery();
+          await ctx.reply(
+            `📦 <b>Source Code</b>\n\n` +
+            `<a href="${config.SOURCE_CODE_URL}">GitHub → ROM Finder Bot</a>\n\n` +
+            `This bot can be used for any general file search, not just ROMs!\n` +
+            `⭐ Star and fork the repo, then replace the word <b>"ROM"</b> ` +
+            `with whatever you need — books, music, mods, patches, anything.`,
+            {
+              parse_mode: 'HTML',
+              link_preview_options: { is_disabled: true },
+            }
+          );
+          break;
+        }
+
         // ── Search flow ──────────────────────────────────────────────────
         case 'search_cat': {
           if (payload === 'ALL') {
