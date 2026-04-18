@@ -34,7 +34,7 @@ async function main(): Promise<void> {
 
   // ── Middleware ─────────────────────────────────────────────────────────
   bot.use(userTracker());
-  bot.use(rateLimiter());
+  bot.use(rateLimiter(config.ADMIN_IDS));
 
   // ── User commands ──────────────────────────────────────────────────────
   bot.command('start',    startCommand);

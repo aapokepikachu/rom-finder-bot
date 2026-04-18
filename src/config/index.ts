@@ -12,12 +12,15 @@ const configSchema = z.object({
   CHANNELS: z.string().default('').transform((val) =>
     val ? val.split(',').map((id) => id.trim()).filter(Boolean) : []
   ),
-  MAX_RESULTS: z.string().default('10').transform(Number),
+  MAX_RESULTS:    z.string().default('10').transform(Number),
   CACHE_MAX_SIZE: z.string().default('200').transform(Number),
-  CACHE_TTL: z.string().default('3600').transform(Number),
+  CACHE_TTL:      z.string().default('3600').transform(Number),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('production'),
-  OWNER_USERNAME: z.string().default('@admin'),
-  OWNER_NAME: z.string().default('Bot Admin'),
+
+  // Owner info for /about — no @ prefix needed in OWNER_HANDLE
+  OWNER_NAME:       z.string().default('Bot Admin'),
+  OWNER_HANDLE:     z.string().default('PokemonBots'),   // username without @
+  SOURCE_CODE_URL:  z.string().default('https://github.com/aapokepikachu/rom-finder-bot'),
 });
 
 const parsed = configSchema.safeParse(process.env);
@@ -33,7 +36,7 @@ export const config = parsed.data;
 export const CATEGORIES = [
   'GBA', 'GBC', 'GB', 'NDS', '3DS', 'PSP', 'PS1',
   'PS2', 'N64', 'SNES', 'NES', 'GCN', 'WII', 'WIIU',
-  'SWITCH', 'GENESIS', 'ARCADE', 'OTHER'
+  'SWITCH', 'GENESIS', 'ARCADE', 'OTHER',
 ] as const;
 
 export type Category = typeof CATEGORIES[number];
