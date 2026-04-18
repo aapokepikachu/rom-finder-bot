@@ -9,7 +9,8 @@ import { createHealthHandler, startStandaloneHealthServer } from './utils/health
 // Middleware
 import { userTracker }  from './middleware/userTracker';
 import { rateLimiter }  from './middleware/rateLimiter';
-import { adminOnly }    from './middleware/admin';
+import { adminOnly }         from './middleware/admin';
+import { maintenanceGuard }  from './middleware/maintenance';
 import { errorHandler } from './middleware/errorHandler';
 
 // Commands
@@ -18,7 +19,9 @@ import { topCommand, featuredCommand }  from './commands/discovery';
 import { searchCommand }                from './commands/search';
 import { helpAdminCommand, setCommand, dbCommand, usersCommand } from './commands/admin';
 import { broadcastCommand }             from './commands/broadcast';
-import { backfillCommand } from './commands/backfill';
+import { backfillCommand }    from './commands/backfill';
+import { maintenanceCommand } from './commands/maintenance';
+import { unindexCommand }     from './commands/unindex';
 
 // Handlers
 import { channelPostHandler, editedChannelPostHandler } from './handlers/channel';
@@ -35,6 +38,7 @@ async function main(): Promise<void> {
   // ── Middleware ─────────────────────────────────────────────────────────
   bot.use(userTracker());
   bot.use(rateLimiter(config.ADMIN_IDS));
+  bot.use(maintenanceGuard());    // blocks users when maintenance is ON
 
   // ── User commands ──────────────────────────────────────────────────────
   bot.command('start',    startCommand);
@@ -51,7 +55,9 @@ async function main(): Promise<void> {
   bot.command('db',        adminOnly(), dbCommand);
   bot.command('users',     adminOnly(), usersCommand);
   bot.command('broadcast', adminOnly(), broadcastCommand);
-  bot.command('backfill',  adminOnly(), backfillCommand);
+  bot.command('backfill',     adminOnly(), backfillCommand);
+  bot.command('maintenance',  adminOnly(), maintenanceCommand);
+  bot.command('unindex',      adminOnly(), unindexCommand);
 
   // ── Channel indexing ───────────────────────────────────────────────────
   bot.on('channel_post',        channelPostHandler);

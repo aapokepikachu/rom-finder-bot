@@ -320,6 +320,42 @@ Exceeded users get a friendly message once, then subsequent requests are silentl
 2. Preview appears — confirm or cancel
 3. Sent to all active users (skips blocked/deleted), reports delivery stats
 
+### Maintenance Mode (`/maintenance`)
+Toggles a global maintenance lock:
+- **ON** → all user commands are blocked with a friendly notice; /search, /top, /featured, etc. all show "under maintenance"
+- **OFF** → bot is fully live again
+- Admins are **never** blocked regardless of maintenance state
+- Channel posts (live indexing) pass through so /backfill continues to work
+- State survives restarts (stored in MongoDB)
+
+**Typical workflow:**
+```
+/maintenance → Turn ON
+/backfill → run full channel scan
+/maintenance → Turn OFF
+```
+
+### Unindex Manager (`/unindex`)
+Three tools for keeping unwanted files out of search results:
+
+**1. Block a Tag** (`🏷️ Block a Tag`)
+- Add a hashtag like `#misc` or `#skip` to a file's caption in the channel
+- Then block that tag in `/unindex` → any file with that tag in its caption is:
+  - Removed from the index immediately
+  - Skipped during future /backfill runs
+  - Skipped on live new posts
+- You can view and remove blocked tags from the same menu
+
+**2. Unindex a Specific File** (`📩 Unindex a Specific File`)
+- Forward the exact file message from the ROM channel to the bot
+- That single file is deleted from the index
+- Will not reappear in search results
+- To make the exclusion permanent across resets, also add a blocking tag to its caption
+
+**3. View & Remove Blocked Tags** (`📋 View & Remove Blocked Tags`)
+- Lists all currently blocked tags
+- Tap any tag to unblock it
+
 ### Database Tools (`/db`)
 | Action | Description |
 |--------|-------------|

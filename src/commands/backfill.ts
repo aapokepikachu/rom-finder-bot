@@ -4,6 +4,7 @@ import { Channel } from '../models/Channel';
 import { cacheService } from '../services/cache';
 import { config } from '../config';
 import { extractCategory, sleep } from '../utils/helpers';
+import { captionHasBlockedTag } from '../utils/blockedTags';
 import { logger } from '../utils/logger';
 
 interface BackfillStats {
@@ -158,6 +159,16 @@ async function backfillChannel(
 
       if (fileObj) {
         const caption: string = forwarded.caption || '';
+
+        // Skip files with blocked tags
+        if (await captionHasBlockedTag(caption)) {
+          stats.skipped++;
+          await bot.telegram.deleteMessage(adminChatId, forwarded.message_id).catch(() => {});
+          consecutiveMisses = 0;
+          currentId++;
+          await sleep(380);
+          continue;
+        }
         const fileName =
           fileObj.file_name ||
           extractFileNameFromCaption(caption) ||

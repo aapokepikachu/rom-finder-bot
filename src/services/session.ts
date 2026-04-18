@@ -1,15 +1,19 @@
+export type BroadcastParseMode = 'none' | 'Markdown' | 'HTML';
+
 export type SessionState =
   | { step: 'idle' }
   | { step: 'search_category' }
   | { step: 'search_query'; category?: string; categoryLabel?: string }
   | { step: 'broadcast_compose' }
-  | { step: 'broadcast_confirm'; message: string }
+  | { step: 'broadcast_pick_format'; message: string }
+  | { step: 'broadcast_confirm'; message: string; parseMode: BroadcastParseMode }
   | { step: 'set_request_url' }
   | { step: 'set_featured_pick_pos' }
   | { step: 'set_featured_pick_msg'; position: number }
-  // Channel mapping flow — now 3 steps: pick channel → enter label → confirm
   | { step: 'map_channel_label'; channelId: string }
-  | { step: 'await_more_results'; results: import('./cache').SearchResult[]; requestUrl?: string };
+  | { step: 'await_more_results'; results: import('./cache').SearchResult[]; requestUrl?: string }
+  | { step: 'unindex_by_tag' }
+  | { step: 'unindex_by_forward' };
 
 interface SessionEntry {
   state: SessionState;
@@ -17,7 +21,7 @@ interface SessionEntry {
 }
 
 const sessions = new Map<number, SessionEntry>();
-const SESSION_TTL = 10 * 60 * 1000; // 10 minutes
+const SESSION_TTL = 10 * 60 * 1000;
 
 setInterval(() => {
   const now = Date.now();

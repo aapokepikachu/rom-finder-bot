@@ -21,8 +21,15 @@ import {
   handleShowFeatured,
   handleSetRequestUrl,
 } from '../commands/admin';
-import { executeBroadcast } from '../commands/broadcast';
+import { executeBroadcast, handleBroadcastPreview } from '../commands/broadcast';
 import { runBackfill } from '../commands/backfill';
+import { setMaintenance } from '../commands/maintenance';
+import {
+  handleUnindexTagPrompt,
+  handleUnindexForwardPrompt,
+  handleUnindexList,
+  handleRemoveBlockedTag,
+} from '../commands/unindex';
 import { sendSearchResults } from '../commands/search';
 import { parseCallbackData, escapeMarkdown, normalizeQuery } from '../utils/helpers';
 import { config } from '../config';
@@ -299,17 +306,88 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
           break;
         }
 
-        // ── Broadcast ────────────────────────────────────────────────────
+        // ── Broadcast format picker ──────────────────────────────────────
+        case 'bcast_fmt': {
+          if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
+          const session = getSession(userId);
+          if (session.step !== 'broadcast_pick_format') {
+            await ctx.answerCbQuery('Session expired. Use /broadcast again.');
+            return;
+          }
+          const parseMode = payload as import('../services/session').BroadcastParseMode;
+          await handleBroadcastPreview(ctx, session.message, parseMode);
+          break;
+        }
+
+        // ── Broadcast confirm / reformat ──────────────────────────────────
         case 'broadcast': {
           if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
+          const session = getSession(userId);
+
           if (payload === 'confirm') {
-            const session = getSession(userId);
             if (session.step !== 'broadcast_confirm') {
               await ctx.answerCbQuery('Session expired. Use /broadcast again.');
               return;
             }
-            await executeBroadcast(ctx, bot, session.message);
+            await executeBroadcast(ctx, bot, session.message, session.parseMode);
+
+          } else if (payload === 'reformat') {
+            // Go back to format picker with the same message
+            if (session.step !== 'broadcast_confirm') {
+              await ctx.answerCbQuery('Session expired.');
+              return;
+            }
+            await ctx.answerCbQuery();
+            setSession(userId, { step: 'broadcast_pick_format', message: session.message });
+            await ctx.reply(
+              `🔄 <b>Choose a different format:</b>`,
+              {
+                parse_mode: 'HTML',
+                reply_markup: {
+                  inline_keyboard: [
+                    [{ text: '📄 Plain Text',              callback_data: 'bcast_fmt:none'     }],
+                    [{ text: '🏷️ HTML (<b>, <i>, <a>)',    callback_data: 'bcast_fmt:HTML'     }],
+                    [{ text: '✏️ Markdown (*bold*, _italic_)', callback_data: 'bcast_fmt:Markdown' }],
+                    [{ text: '❌ Cancel',                    callback_data: 'admin_cancel'       }],
+                  ],
+                },
+              }
+            );
           }
+          break;
+        }
+
+        // ── Maintenance ─────────────────────────────────────────────────
+        case 'maintenance': {
+          if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
+          if (payload === 'on' || payload === 'off') {
+            await setMaintenance(ctx, payload as 'on' | 'off');
+          }
+          break;
+        }
+
+        // ── Unindex ──────────────────────────────────────────────────────
+        case 'unindex': {
+          if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
+          switch (payload) {
+            case 'tag':     await handleUnindexTagPrompt(ctx);     break;
+            case 'forward': await handleUnindexForwardPrompt(ctx); break;
+            case 'list':    await handleUnindexList(ctx);          break;
+            case 'back': {
+              await ctx.answerCbQuery();
+              const { unindexCommand } = await import('../commands/unindex');
+              // Re-show the main unindex menu
+              await ctx.deleteMessage().catch(() => {});
+              await unindexCommand(ctx);
+              break;
+            }
+          }
+          break;
+        }
+
+        case 'unindex_remove_tag': {
+          if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
+          await handleRemoveBlockedTag(ctx, payload);
           break;
         }
 

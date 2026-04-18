@@ -2,102 +2,80 @@ import { Context } from 'telegraf';
 import { Channel } from '../models/Channel';
 import { ChannelMessage } from '../models/ChannelMessage';
 import { cacheService } from '../services/cache';
-import {
-  extractCategory,
-  extractFileName,
-} from '../utils/helpers';
+import { extractCategory } from '../utils/helpers';
+import { captionHasBlockedTag } from '../utils/blockedTags';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 
-/**
- * Handles all posts from channels where the bot is an admin.
- * Indexes file messages for search.
- */
 export async function channelPostHandler(ctx: Context): Promise<void> {
   const post = ctx.channelPost;
   if (!post) return;
 
   const chatId = post.chat.id.toString();
 
-  // Only process channels we're tracking
   const isTracked =
     config.CHANNELS.includes(chatId) ||
     (await Channel.exists({ channelId: chatId }));
 
   if (!isTracked) return;
 
-  // Only index messages with files
-  const doc = (post as any).document;
-  const video = (post as any).video;
-  const audio = (post as any).audio;
+  const doc     = (post as any).document;
+  const video   = (post as any).video;
+  const audio   = (post as any).audio;
   const fileObj = doc || video || audio;
-
-  if (!fileObj) return; // Skip text-only posts
+  if (!fileObj) return;
 
   const caption: string = (post as any).caption || '';
+
+  // Skip files with blocked tags in caption
+  if (await captionHasBlockedTag(caption)) {
+    logger.debug(`Skipping post ${post.message_id} in ${chatId} — blocked tag in caption`);
+    return;
+  }
+
   const fileName = fileObj.file_name || extractFileNameFromCaption(caption) || `file_${post.message_id}`;
   const fileSize: number | undefined = fileObj.file_size;
   const fileId: string = fileObj.file_id;
 
-  // Detect category from channel mapping or caption tags
-  let category: string | undefined;
-  const channelMapping = await Channel.findOne({ channelId: chatId }, 'category').lean();
-  if (channelMapping) {
-    category = channelMapping.category;
-  } else {
-    category = extractCategory(caption);
-  }
+  const channelMapping = await Channel.findOne({ channelId: chatId }, 'label').lean();
+  const category = channelMapping?.label || extractCategory(caption);
 
   try {
     await ChannelMessage.findOneAndUpdate(
       { channelId: chatId, messageId: post.message_id },
-      {
-        $set: {
-          fileName,
-          caption,
-          category,
-          fileSize,
-          fileId,
-          receivedAt: new Date(),
-        },
-      },
+      { $set: { fileName, caption, category, fileSize, fileId, receivedAt: new Date() } },
       { upsert: true }
     );
-
-    // Invalidate cache for this category since new content arrived
-    if (category) {
-      cacheService.invalidate(category.toLowerCase());
-    }
-
-    logger.debug(
-      `Indexed message ${post.message_id} from channel ${chatId} (${fileName})`
-    );
+    if (category) cacheService.invalidate(category.toLowerCase());
+    logger.debug(`Indexed ${post.message_id} from ${chatId} (${fileName})`);
   } catch (error: any) {
-    // Duplicate key is fine (message already indexed)
-    if (error.code !== 11000) {
-      logger.error(`Error indexing channel message:`, error);
-    }
+    if (error.code !== 11000) logger.error('Error indexing channel message:', error);
   }
 }
 
-/**
- * Handles edited channel posts - updates the indexed data
- */
 export async function editedChannelPostHandler(ctx: Context): Promise<void> {
   const post = ctx.editedChannelPost;
   if (!post) return;
 
-  const chatId = post.chat.id.toString();
-  const newCaption: string = (post as any).caption || '';
+  const chatId      = post.chat.id.toString();
+  const newCaption  = (post as any).caption || '';
 
   if (!newCaption) return;
+
+  // If edited caption now contains a blocked tag — remove from index
+  if (await captionHasBlockedTag(newCaption)) {
+    await ChannelMessage.deleteOne({ channelId: chatId, messageId: post.message_id });
+    cacheService.invalidate();
+    logger.debug(`Removed ${post.message_id} from ${chatId} after edit added blocked tag`);
+    return;
+  }
 
   try {
     await ChannelMessage.findOneAndUpdate(
       { channelId: chatId, messageId: post.message_id },
       { $set: { caption: newCaption } }
     );
-    cacheService.invalidate(); // Full invalidation on edits
+    cacheService.invalidate();
   } catch (error) {
     logger.warn(`Failed to update indexed message ${post.message_id}:`, error);
   }

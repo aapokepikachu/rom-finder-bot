@@ -7,13 +7,15 @@ import { cacheService } from '../services/cache';
 import { SearchService } from '../services/search';
 import { getSession, setSession, clearSession } from '../services/session';
 import { sendSearchResults } from '../commands/search';
-import { handleBroadcastPreview } from '../commands/broadcast';
+import { handleBroadcastPickFormat } from '../commands/broadcast';
 import {
   buildChannelMappingKeyboard,
   buildConfirmKeyboard,
 } from '../utils/keyboards';
 import { logger } from '../utils/logger';
 import { isAdmin } from '../middleware/admin';
+import { handleTagInput, handleForwardedUnindex } from '../commands/unindex';
+import { invalidateBlockedTagsCache } from '../utils/blockedTags';
 import { config } from '../config';
 
 function esc(s: string): string {
@@ -110,11 +112,19 @@ export function registerTextHandler(bot: Telegraf, searchService: SearchService)
         return;
       }
 
+      // ── Admin: unindex by tag ──────────────────────────────────────────
+      case 'unindex_by_tag': {
+        if (!isAdmin(userId)) break;
+        if (text.startsWith('/')) break;
+        await handleTagInput(ctx, text);
+        return;
+      }
+
       // ── Admin: broadcast compose ───────────────────────────────────────
       case 'broadcast_compose': {
         if (!isAdmin(userId)) break;
         if (text.startsWith('/')) break;
-        await handleBroadcastPreview(ctx, text);
+        await handleBroadcastPickFormat(ctx, text);
         return;
       }
 
@@ -157,6 +167,12 @@ export function registerTextHandler(bot: Telegraf, searchService: SearchService)
     if (!userId || !isAdmin(userId)) return;
 
     const session = getSession(userId);
+    if (session.step === 'unindex_by_forward') {
+      if (!isAdmin(userId)) return;
+      await handleForwardedUnindex(ctx);
+      return;
+    }
+
     if (session.step !== 'set_featured_pick_msg') return;
 
     const forwardFromChat  = msg.forward_from_chat;

@@ -8,8 +8,8 @@ export interface ISetting extends Document {
 
 const settingSchema = new Schema<ISetting>(
   {
-    key: { type: String, required: true, unique: true, index: true },
-    value: { type: String, required: true },
+    key:       { type: String, required: true, unique: true, index: true },
+    value:     { type: String, required: true },
     updatedBy: { type: Number, required: true },
   },
   { timestamps: true }
@@ -18,6 +18,8 @@ const settingSchema = new Schema<ISetting>(
 export const Setting = mongoose.model<ISetting>('Setting', settingSchema);
 
 export const SETTING_KEYS = {
-  REQUEST_URL: 'request_url',
-  WELCOME_MESSAGE: 'welcome_message',
+  REQUEST_URL:    'request_url',
+  WELCOME_MESSAGE:'welcome_message',
+  MAINTENANCE:    'maintenance',       // value: 'on' | 'off'
+  BLOCKED_TAGS:   'blocked_tags',      // value: comma-separated tags e.g. "#misc,#test"
 } as const;
