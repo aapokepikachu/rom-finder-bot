@@ -10,34 +10,51 @@ import { logger } from '../utils/logger';
 import { normalizeQuery, buildMessageLink } from '../utils/helpers';
 
 export interface SearchOptions {
-  query: string;
-  category?: string;   // channelId when filtering to one channel, undefined = search all
-  userId: number;
+  query:    string;
+  /**
+   * How to scope the search:
+   *   undefined        → search all channels
+   *   "tag::#emulator" → filter by caption tag across all channels
+   *   "-100xxxx"       → filter to one specific channel ID
+   */
+  category?: string;
+  userId:   number;
 }
 
 export interface SearchResponse {
-  bestMatch: SearchResult | null;
+  bestMatch:    SearchResult | null;
   otherMatches: SearchResult[];
-  fromCache: boolean;
-  suggestions: string[];
+  fromCache:    boolean;
+  suggestions:  string[];
 }
 
 interface IndexedMessage {
   messageId: number;
-  fileName: string;
-  caption: string;
+  fileName:  string;
+  caption:   string;
   category?: string;
   fileSize?: number;
 }
 
 interface MessageIndex {
-  channelId: string;
-  messages: IndexedMessage[];
-  indexedAt: number;
+  channelId:  string;
+  messages:   IndexedMessage[];
+  indexedAt:  number;
 }
 
 const messageIndexes = new Map<string, MessageIndex>();
-const INDEX_TTL = 30 * 60 * 1000; // 30 minutes
+const INDEX_TTL = 30 * 60 * 1000;
+
+/** Prefix used to distinguish tag-based categories from channel IDs */
+export const TAG_CATEGORY_PREFIX = 'tag::';
+
+export function isTagCategory(category: string): boolean {
+  return category.startsWith(TAG_CATEGORY_PREFIX);
+}
+
+export function extractTag(category: string): string {
+  return category.slice(TAG_CATEGORY_PREFIX.length);
+}
 
 export class SearchService {
   private bot: Telegraf;
@@ -49,59 +66,65 @@ export class SearchService {
   async search(options: SearchOptions): Promise<SearchResponse> {
     const { query, category, userId } = options;
     const normalized = normalizeQuery(query);
-    const cacheKey = category || 'ALL';
+    const cacheKey   = category || 'ALL';
 
     // Cache check
     const cached = cacheService.get(normalized, cacheKey);
     if (cached) {
-      logger.debug(`Cache HIT query="${normalized}" channel="${cacheKey}"`);
+      logger.debug(`Cache HIT query="${normalized}" scope="${cacheKey}"`);
       await this.recordSearch(query, normalized);
       return { ...cached, fromCache: true, suggestions: [] };
     }
 
-    // Channels to search
-    const channelsToSearch = category ? [category] : await this.getAllChannelIds();
+    // Load candidate messages
+    let allMessages: (IndexedMessage & { channelId: string })[] = [];
 
-    if (channelsToSearch.length === 0) {
-      return {
-        bestMatch: null,
-        otherMatches: [],
-        fromCache: false,
-        suggestions: ['No channels configured yet. Ask the admin to add channels.'],
-      };
+    if (category && isTagCategory(category)) {
+      // Tag-based: load all channels, then filter by tag in caption
+      const tag = extractTag(category);
+      const channelIds = await this.getAllChannelIds();
+      for (const channelId of channelIds) {
+        const msgs = await this.getChannelMessages(channelId);
+        msgs
+          .filter((m) => m.caption.toLowerCase().includes(tag.toLowerCase()))
+          .forEach((m) => allMessages.push({ ...m, channelId }));
+      }
+      logger.debug(`Tag search "${tag}": ${allMessages.length} matching messages`);
+    } else if (category) {
+      // Channel-based: only load that specific channel
+      const msgs = await this.getChannelMessages(category);
+      msgs.forEach((m) => allMessages.push({ ...m, channelId: category }));
+    } else {
+      // Global: load all channels
+      const channelIds = await this.getAllChannelIds();
+      for (const channelId of channelIds) {
+        const msgs = await this.getChannelMessages(channelId);
+        msgs.forEach((m) => allMessages.push({ ...m, channelId }));
+      }
     }
 
-    // Load messages from in-memory index (backed by DB)
-    const allMessages: (IndexedMessage & { channelId: string })[] = [];
-    for (const channelId of channelsToSearch) {
-      const msgs = await this.getChannelMessages(channelId);
-      msgs.forEach((m) => allMessages.push({ ...m, channelId }));
-    }
-
-    logger.debug(
-      `Search "${normalized}": ${allMessages.length} messages across ${channelsToSearch.length} channel(s)`
-    );
+    logger.debug(`Search "${normalized}": ${allMessages.length} candidates, scope="${cacheKey}"`);
 
     if (allMessages.length === 0) {
       await this.recordSearch(query, normalized);
       return {
-        bestMatch: null,
+        bestMatch:    null,
         otherMatches: [],
-        fromCache: false,
-        suggestions: this.generateSuggestions(query),
+        fromCache:    false,
+        suggestions:  this.generateSuggestions(query),
       };
     }
 
-    // ── Fuse.js fuzzy search ────────────────────────────────────────────────
+    // Fuse.js fuzzy search
     const fuse = new Fuse(allMessages, {
       keys: [
         { name: 'fileName', weight: 0.65 },
         { name: 'caption',  weight: 0.35 },
       ],
-      includeScore: true,
-      threshold: 0.55,
+      includeScore:    true,
+      threshold:       0.55,
       minMatchCharLength: 2,
-      ignoreLocation: true,
+      ignoreLocation:  true,
     });
 
     const fuseResults = fuse.search(normalized);
@@ -109,26 +132,23 @@ export class SearchService {
     if (fuseResults.length === 0) {
       await this.recordSearch(query, normalized);
       return {
-        bestMatch: null,
+        bestMatch:    null,
         otherMatches: [],
-        fromCache: false,
-        suggestions: this.generateSuggestions(query),
+        fromCache:    false,
+        suggestions:  this.generateSuggestions(query),
       };
     }
 
-    // ── Apply feedback boost scores ──────────────────────────────────────────
-    // Load aggregated feedback for this query to boost confirmed results
+    // Apply feedback boost scores
     const feedbackBoosts = await this.getFeedbackBoosts(normalized);
 
     const searchResults: SearchResult[] = fuseResults
       .slice(0, config.MAX_RESULTS)
       .map((r) => {
         const baseScore = 1 - (r.score ?? 1);
-        const boostKey = `${r.item.channelId}:${r.item.messageId}`;
-        const boost = feedbackBoosts.get(boostKey) ?? 0;
-        // Boost range: +0.15 for highly confirmed, -0.10 for often rejected
+        const boostKey  = `${r.item.channelId}:${r.item.messageId}`;
+        const boost     = feedbackBoosts.get(boostKey) ?? 0;
         const finalScore = Math.min(1, Math.max(0, baseScore + boost));
-
         return {
           channelId:   r.item.channelId,
           messageId:   r.item.messageId,
@@ -140,7 +160,6 @@ export class SearchService {
           messageLink: buildMessageLink(r.item.channelId, r.item.messageId),
         };
       })
-      // Re-sort after boost adjustment
       .sort((a, b) => b.score - a.score);
 
     const response: CachedResult = {
@@ -157,38 +176,27 @@ export class SearchService {
     return { ...response, fromCache: false, suggestions: [] };
   }
 
-  /**
-   * Returns a map of "channelId:messageId" → boost value.
-   * Positive = many users confirmed this result. Negative = often rejected.
-   */
   private async getFeedbackBoosts(normalizedQuery: string): Promise<Map<string, number>> {
     const boosts = new Map<string, number>();
-
     try {
       const agg = await SearchFeedback.aggregate([
         { $match: { normalizedQuery } },
         {
           $group: {
-            _id: { channelId: '$channelId', messageId: '$messageId' },
+            _id:           { channelId: '$channelId', messageId: '$messageId' },
             gotItCount:    { $sum: { $cond: ['$gotIt', 1, 0] } },
-            notGotItCount: { $sum: { $cond: ['$gotIt', 0, 1] } },
             total:         { $sum: 1 },
           },
         },
       ]);
-
       for (const row of agg) {
         const ratio = row.gotItCount / row.total;
-        // ratio 1.0 = all positive → +0.15 boost
-        // ratio 0.0 = all negative → -0.10 penalty
         const boost = (ratio - 0.5) * 0.30;
-        const key = `${row._id.channelId}:${row._id.messageId}`;
-        boosts.set(key, boost);
+        boosts.set(`${row._id.channelId}:${row._id.messageId}`, boost);
       }
     } catch (err) {
       logger.warn('getFeedbackBoosts error:', err);
     }
-
     return boosts;
   }
 
@@ -217,7 +225,6 @@ export class SearchService {
       { channelId },
       'messageId fileName caption category fileSize'
     ).lean();
-
     return docs.map((d) => ({
       messageId: d.messageId,
       fileName:  d.fileName,
@@ -231,10 +238,7 @@ export class SearchService {
     try {
       await Search.findOneAndUpdate(
         { normalizedQuery: normalized },
-        {
-          $inc: { count: 1 },
-          $set: { query: original, lastSearchedAt: new Date() },
-        },
+        { $inc: { count: 1 }, $set: { query: original, lastSearchedAt: new Date() } },
         { upsert: true }
       );
     } catch (err) {
@@ -244,8 +248,8 @@ export class SearchService {
 
   private generateSuggestions(query: string): string[] {
     const s: string[] = [];
-    if (query.length < 3)          s.push('Try a longer search term (at least 3 characters)');
-    if (query.includes('.'))       s.push(`Try without file extension: "${query.replace(/\.[^.]+$/, '')}"`);
+    if (query.length < 3)              s.push('Try a longer search term (at least 3 characters)');
+    if (query.includes('.'))           s.push(`Try without file extension: "${query.replace(/\.[^.]+$/, '')}"`);
     if (query.split(' ').length === 1) s.push('Try adding more words from the full title');
     s.push('Check the spelling and try again');
     return s.slice(0, 3);
@@ -253,7 +257,7 @@ export class SearchService {
 
   clearIndex(channelId?: string): void {
     if (channelId) messageIndexes.delete(channelId);
-    else messageIndexes.clear();
+    else           messageIndexes.clear();
   }
 
   getIndexStats() {

@@ -1,6 +1,7 @@
 import { Context, Telegraf } from 'telegraf';
 import { CallbackQuery } from 'telegraf/typings/core/types/typegram';
 import { Channel } from '../models/Channel';
+import { TagCategory }  from '../models/TagCategory';
 import { Featured } from '../models/Featured';
 import { ChannelMessage } from '../models/ChannelMessage';
 import { Search } from '../models/Search';
@@ -32,6 +33,8 @@ import {
 } from '../commands/unindex';
 import { sendSearchResults } from '../commands/search';
 import { parseCallbackData, escapeMarkdown, normalizeQuery } from '../utils/helpers';
+import { TAG_CATEGORY_PREFIX, isTagCategory } from '../services/search';
+import { buildTagCategoryListKeyboard }       from '../utils/keyboards';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { isAdmin } from '../middleware/admin';
@@ -70,22 +73,34 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
             setSession(userId, { step: 'search_query', category: undefined, categoryLabel: undefined });
             await ctx.answerCbQuery('Searching all channels');
             await ctx.editMessageText(
-              `🔍 *Searching all channels*\n\nType the ROM name you\'re looking for:`,
-              { parse_mode: 'MarkdownV2' }
+              `🔍 <b>Searching all channels</b>\n\nType the ROM name you\'re looking for:`,
+              { parse_mode: 'HTML' }
             );
-          } else {
-            const ch = await Channel.findOne({ channelId: payload }, 'channelId label').lean();
-            const label    = ch?.label    || payload;
-            const category = ch?.channelId || payload;
-            setSession(userId, { step: 'search_query', category, categoryLabel: label });
+          } else if (isTagCategory(payload)) {
+            const tag   = payload.slice(TAG_CATEGORY_PREFIX.length);
+            const tc    = await TagCategory.findOne({ tag }, 'label').lean();
+            const label = tc?.label || tag;
+            setSession(userId, { step: 'search_query', category: payload, categoryLabel: label });
             await ctx.answerCbQuery(`Category: ${label}`);
             await ctx.editMessageText(
-              `🔍 Category: *${escapeMarkdown(label)}*\n\nType the ROM name you\'re looking for:`,
-              { parse_mode: 'MarkdownV2' }
+              `🔍 Category: <b>${label.replace(/</g,'&lt;')}</b>\n\nType the ROM name you\'re looking for:`,
+              { parse_mode: 'HTML' }
+            );
+          } else {
+            const ch    = await Channel.findOne({ channelId: payload }, 'channelId label').lean();
+            const label = ch?.label    || payload;
+            const cat   = ch?.channelId || payload;
+            setSession(userId, { step: 'search_query', category: cat, categoryLabel: label });
+            await ctx.answerCbQuery(`Category: ${label}`);
+            await ctx.editMessageText(
+              `🔍 Category: <b>${label.replace(/</g,'&lt;')}</b>\n\nType the ROM name you\'re looking for:`,
+              { parse_mode: 'HTML' }
             );
           }
           break;
         }
+
+        case 'search_again':
 
         case 'search_again': {
           await ctx.answerCbQuery();
@@ -409,6 +424,63 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
         }
 
         // ── Backfill ─────────────────────────────────────────────────────
+        // Tag Category management
+        case 'tag_cat': {
+          if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
+          await ctx.answerCbQuery();
+          if (payload === 'new') {
+            setSession(userId, { step: 'tag_cat_awaiting_tag' });
+            await ctx.editMessageText(
+              `🏷️ <b>Set Tag Category — Step 1 of 2</b>\n\n`
+              + `A tag category shows files from <i>any</i> channel whose caption contains a specific hashtag.\n\n`
+              + `<b>Example:</b> Tag <code>#emulator</code> + Label <code>Emulators</code>\n`
+              + `<b>Result:</b> /search shows an "Emulators" button; only files with <code>#emulator</code> in their caption appear.\n\n`
+              + `<b>Step 1:</b> Send the hashtag (must start with <code>#</code>, lowercase, no spaces):\n`
+              + `Examples: <code>#emulator</code>, <code>#gba</code>, <code>#psp</code>\n\n`
+              + `<i>Send /cancel to abort.</i>`,
+              { parse_mode: 'HTML' }
+            );
+          } else if (payload === 'list') {
+            const tagCats = await TagCategory.find({}).sort({ label: 1 }).lean();
+            if (tagCats.length === 0) {
+              await ctx.editMessageText(
+                '📋 <b>Tag Categories</b>\n\n<i>No tag categories set yet.</i>',
+                { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: '➕ Add New', callback_data: 'tag_cat:new' }, { text: '❌ Close', callback_data: 'admin_cancel' }]] } }
+              );
+            } else {
+              await ctx.editMessageText(
+                '📋 <b>Tag Categories</b>\n\nTap a category to remove it:',
+                { parse_mode: 'HTML', reply_markup: buildTagCategoryListKeyboard(tagCats as any) }
+              );
+            }
+          } else if (payload === 'back') {
+            const { handleShowChannelMapping } = await import('../commands/admin');
+            await handleShowChannelMapping(ctx);
+          }
+          break;
+        }
+
+        case 'tag_cat_remove': {
+          if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
+          await ctx.answerCbQuery();
+          const tagToRemove = payload;
+          await TagCategory.deleteOne({ tag: tagToRemove });
+          cacheService.invalidate();
+          const remaining = await TagCategory.find({}).sort({ label: 1 }).lean();
+          if (remaining.length === 0) {
+            await ctx.editMessageText(
+              `✅ Tag category <code>${tagToRemove.replace(/</g,'&lt;')}</code> removed.\n\n<i>No tag categories remaining.</i>`,
+              { parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: '➕ Add New', callback_data: 'tag_cat:new' }, { text: '❌ Close', callback_data: 'admin_cancel' }]] } }
+            );
+          } else {
+            await ctx.editMessageText(
+              `✅ Removed <code>${tagToRemove.replace(/</g,'&lt;')}</code>. Remaining:`,
+              { parse_mode: 'HTML', reply_markup: buildTagCategoryListKeyboard(remaining as any) }
+            );
+          }
+          break;
+        }
+
         case 'backfill_start': {
           if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
           await ctx.answerCbQuery('🔄 Starting backfill...');

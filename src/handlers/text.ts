@@ -1,7 +1,8 @@
 import { Context, Telegraf } from 'telegraf';
 import { Message } from 'telegraf/typings/core/types/typegram';
 import { Featured } from '../models/Featured';
-import { Channel } from '../models/Channel';
+import { Channel }     from '../models/Channel';
+import { TagCategory } from '../models/TagCategory';
 import { Setting, SETTING_KEYS } from '../models/Setting';
 import { cacheService } from '../services/cache';
 import { SearchService } from '../services/search';
@@ -117,6 +118,71 @@ export function registerTextHandler(bot: Telegraf, searchService: SearchService)
         if (!isAdmin(userId)) break;
         if (text.startsWith('/')) break;
         await handleTagInput(ctx, text);
+        return;
+      }
+
+      // Admin: tag category step 1 - receive hashtag
+      case 'tag_cat_awaiting_tag': {
+        if (!isAdmin(userId)) break;
+        if (text.startsWith('/')) break;
+        const rawTag = text.trim().toLowerCase();
+        if (!rawTag.startsWith('#')) {
+          await ctx.reply(
+            '⚠️ Tag must start with <code>#</code> — e.g. <code>#emulator</code>',
+            { parse_mode: 'HTML' }
+          );
+          return;
+        }
+        if (!/^#[a-z0-9_]+$/.test(rawTag)) {
+          await ctx.reply(
+            '⚠️ Only lowercase letters, numbers and underscores allowed after <code>#</code>.',
+            { parse_mode: 'HTML' }
+          );
+          return;
+        }
+        const existingTag = await TagCategory.findOne({ tag: rawTag }).lean();
+        if (existingTag) {
+          clearSession(userId);
+          await ctx.reply(
+            `ℹ️ Tag <code>${rawTag}</code> already exists as <b>${existingTag.label.replace(/</g,'&lt;')}</b>.`,
+            { parse_mode: 'HTML' }
+          );
+          return;
+        }
+        setSession(userId, { step: 'tag_cat_awaiting_label', tag: rawTag });
+        await ctx.reply(
+          `🏷️ <b>Set Tag Category — Step 2 of 2</b>\n\n` +
+          `Tag: <code>${rawTag}</code>\n\n` +
+          `<b>Step 2:</b> Send the button label users will see in /search.\n` +
+          `Keep it short and clear.\n\n` +
+          `Examples: <code>Emulators</code>, <code>🎮 GBA Hacks</code>, <code>Patch ROMs</code>\n\n` +
+          `<i>Send /cancel to abort.</i>`,
+          { parse_mode: 'HTML' }
+        );
+        return;
+      }
+
+      // Admin: tag category step 2 - receive button label
+      case 'tag_cat_awaiting_label': {
+        if (!isAdmin(userId)) break;
+        if (text.startsWith('/')) break;
+        const newLabel = text.trim();
+        if (newLabel.length < 1 || newLabel.length > 50) {
+          await ctx.reply('⚠️ Label must be 1–50 characters. Try again:');
+          return;
+        }
+        const savedTag = session.tag;
+        await TagCategory.create({ tag: savedTag, label: newLabel, addedBy: userId });
+        cacheService.invalidate();
+        clearSession(userId);
+        await ctx.reply(
+          `✅ <b>Tag Category created!</b>\n\n` +
+          `🏷️ Tag: <code>${savedTag}</code>\n` +
+          `📋 Button label: <b>${newLabel.replace(/</g,'&lt;')}</b>\n\n` +
+          `Users will see <b>${newLabel.replace(/</g,'&lt;')}</b> in /search.\n` +
+          `Only files with <code>${savedTag}</code> in their caption will be shown.`,
+          { parse_mode: 'HTML' }
+        );
         return;
       }
 

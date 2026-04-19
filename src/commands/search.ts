@@ -3,6 +3,7 @@ import { SearchService } from '../services/search';
 import { setSession, clearSession } from '../services/session';
 import { Setting, SETTING_KEYS } from '../models/Setting';
 import { Channel } from '../models/Channel';
+import { TagCategory } from '../models/TagCategory';
 import {
   buildSearchCategoryKeyboard,
   buildResultKeyboard,
@@ -16,54 +17,62 @@ import {
   buildMessageLink,
 } from '../utils/helpers';
 import { SearchResult } from '../services/cache';
+import { TAG_CATEGORY_PREFIX, isTagCategory } from '../services/search';
 
 export async function searchCommand(ctx: Context): Promise<void> {
-  const mappedChannels = await Channel.find({}).sort({ label: 1 }).lean();
+  const [channelCategories, tagCategories] = await Promise.all([
+    Channel.find({}).sort({ label: 1 }).lean(),
+    TagCategory.find({}).sort({ label: 1 }).lean(),
+  ]);
+
+  const hasAny = channelCategories.length > 0 || tagCategories.length > 0;
 
   setSession(ctx.from!.id, { step: 'search_category' });
 
-  if (mappedChannels.length === 0) {
-    // No categories mapped — skip straight to query input
+  if (!hasAny) {
     setSession(ctx.from!.id, { step: 'search_query', category: undefined });
     await ctx.reply(
-      '🔍 *ROM Search*\n\n_No categories mapped yet — searching all channels\\._\n\nType the ROM name you\'re looking for:',
-      { parse_mode: 'MarkdownV2' }
+      '🔍 <b>ROM Search</b>\n\n<i>No categories mapped yet — searching all channels.</i>\n\nType the ROM name you\'re looking for:',
+      { parse_mode: 'HTML' }
     );
     return;
   }
 
   await ctx.reply(
-    '🔍 *ROM Search*\n\nSelect a category, or search everywhere:',
+    '🔍 <b>ROM Search</b>\n\nSelect a category, or search everywhere:',
     {
-      parse_mode: 'MarkdownV2',
-      reply_markup: buildSearchCategoryKeyboard(mappedChannels as any),
+      parse_mode: 'HTML',
+      reply_markup: buildSearchCategoryKeyboard(
+        channelCategories as any,
+        tagCategories     as any
+      ),
     }
   );
 }
 
 export function buildBestMatchMessage(result: SearchResult): string {
   const lines: string[] = [];
-  lines.push(`🎮 *Best Match Found\\!*\n`);
-  lines.push(`📁 *${escapeMarkdown(truncate(result.fileName, 60))}*`);
-  if (result.category) lines.push(`🏷️ Category: *${escapeMarkdown(result.category)}*`);
-  if (result.fileSize) lines.push(`💾 Size: ${escapeMarkdown(formatFileSize(result.fileSize))}`);
+  lines.push(`🎮 <b>Best Match Found!</b>\n`);
+  lines.push(`📁 <b>${esc(truncate(result.fileName, 60))}</b>`);
+  if (result.category) lines.push(`🏷️ Category: <b>${esc(result.category)}</b>`);
+  if (result.fileSize) lines.push(`💾 Size: ${esc(formatFileSize(result.fileSize))}`);
 
   const captionPreview = truncate(result.caption.replace(/\n{3,}/g, '\n\n'), 300);
   if (captionPreview) {
-    lines.push(`\n📝 *Caption:*\n${escapeMarkdown(captionPreview)}`);
+    lines.push(`\n📝 <b>Caption:</b>\n${esc(captionPreview)}`);
   }
-  lines.push(`\n🔗 [Open in Channel](${result.messageLink})`);
+  lines.push(`\n🔗 <a href="${result.messageLink}">Open in Channel</a>`);
   return lines.join('\n');
 }
 
 export function buildOtherMatchesMessage(results: SearchResult[]): string {
   if (results.length === 0) return '';
-  let text = `\n📋 *Other Matches \\(${results.length}\\):*\n\n`;
+  let text = `\n📋 <b>Other Matches (${results.length}):</b>\n\n`;
   results.forEach((r, i) => {
-    const name  = escapeMarkdown(truncate(r.fileName, 50));
+    const name  = esc(truncate(r.fileName, 50));
     const link  = buildMessageLink(r.channelId, r.messageId);
     const score = Math.round(r.score * 100);
-    text += `${i + 1}\\. [${name}](${link}) — ${score}% match\n`;
+    text += `${i + 1}. <a href="${link}">${name}</a> — ${score}% match\n`;
   });
   return text;
 }
@@ -77,55 +86,52 @@ export async function sendSearchResults(
 ): Promise<void> {
   const userId = ctx.from!.id;
 
-  const loadingMsg = await ctx.reply('🔍 Searching\\.\\.\\. please wait', {
-    parse_mode: 'MarkdownV2',
-  });
+  const loadingMsg = await ctx.reply('🔍 Searching... please wait');
 
   try {
     const response = await searchService.search({ query, category, userId });
     await ctx.telegram.deleteMessage(ctx.chat!.id, loadingMsg.message_id).catch(() => {});
 
     const requestSetting = await Setting.findOne({ key: SETTING_KEYS.REQUEST_URL }).lean();
-    const requestUrl = requestSetting?.value;
+    const requestUrl     = requestSetting?.value;
 
     if (!response.bestMatch) {
-      let text = `❌ *No Results Found*\n\nNo ROMs matched: *${escapeMarkdown(query)}*\n`;
-      if (categoryLabel) text += `Category: *${escapeMarkdown(categoryLabel)}*\n`;
+      let text = `❌ <b>No Results Found</b>\n\nNo ROMs matched: <b>${esc(query)}</b>\n`;
+      if (categoryLabel) text += `Category: <b>${esc(categoryLabel)}</b>\n`;
       if (response.suggestions.length > 0) {
-        text += `\n💡 *Suggestions:*\n`;
-        response.suggestions.forEach((s) => { text += `• ${escapeMarkdown(s)}\n`; });
+        text += `\n💡 <b>Suggestions:</b>\n`;
+        response.suggestions.forEach((s) => { text += `• ${esc(s)}\n`; });
       }
       await ctx.reply(text, {
-        parse_mode: 'MarkdownV2',
+        parse_mode:   'HTML',
         reply_markup: buildRequestItKeyboard(requestUrl),
       });
       clearSession(userId);
       return;
     }
 
-    // Best match message
-    const bestText = buildBestMatchMessage(response.bestMatch);
-    await ctx.reply(bestText, {
-      parse_mode: 'MarkdownV2',
+    // Best match
+    await ctx.reply(buildBestMatchMessage(response.bestMatch), {
+      parse_mode:          'HTML',
       link_preview_options: { is_disabled: true },
-      reply_markup: buildResultKeyboard(response.bestMatch, response.otherMatches, requestUrl),
+      reply_markup:         buildResultKeyboard(response.bestMatch, response.otherMatches, requestUrl),
     });
 
     // Other matches
     if (response.otherMatches.length > 0) {
       await ctx.reply(buildOtherMatchesMessage(response.otherMatches), {
-        parse_mode: 'MarkdownV2',
+        parse_mode:          'HTML',
         link_preview_options: { is_disabled: true },
       });
     }
 
-    // Feedback button — ask if this was the right ROM
-    const best = response.bestMatch;
+    // Feedback
+    const best           = response.bestMatch;
     const feedbackPayload = `${best.channelId}:${best.messageId}:${encodeURIComponent(query)}`;
     await ctx.reply(
-      '❓ *Did you find the ROM you were looking for?*\n_Your feedback helps improve future results\\._',
+      '❓ <b>Did you find the ROM you were looking for?</b>\n<i>Your feedback improves future results.</i>',
       {
-        parse_mode: 'MarkdownV2',
+        parse_mode:   'HTML',
         reply_markup: buildFeedbackKeyboard(feedbackPayload),
       }
     );
@@ -135,4 +141,8 @@ export async function sendSearchResults(
     await ctx.telegram.deleteMessage(ctx.chat!.id, loadingMsg.message_id).catch(() => {});
     throw error;
   }
+}
+
+function esc(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }

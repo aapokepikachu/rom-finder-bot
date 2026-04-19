@@ -1,53 +1,54 @@
 # 🎮 ROM Finder Bot
 
-A production-ready Telegram bot that searches ROM files across multiple Telegram channels using fuzzy matching and user-feedback-driven ranking.
+A production-ready Telegram bot that searches ROM files across multiple channels using fuzzy matching and user-feedback-driven ranking. Fully modular — swap "ROM" for any file type and it works as a general-purpose file-search bot.
 
-**Built with:** Node.js + TypeScript + Telegraf · **DB:** MongoDB Atlas (M0 free) · **Hosting:** Render (free tier)
-
+**Stack:** Node.js · TypeScript · Telegraf · MongoDB Atlas M0 · Render (free tier)  
+**Version:** 1.0.1  
 **Made by:** [@PokemonBots](https://t.me/PokemonBots)  
-**Source Code:** [github.com/aapokepikachu/rom-finder-bot](https://github.com/aapokepikachu/rom-finder-bot)
+**Source:** [github.com/aapokepikachu/rom-finder-bot](https://github.com/aapokepikachu/rom-finder-bot)
 
 ---
 
 ## 🤖 How the Bot Works (User Guide)
 
-### Starting Out
-Send `/start` for a welcome message, or `/help` for the full command list.
-
 ### Searching for a ROM
+
 1. Send `/search`
-2. A keyboard appears with **your admin's mapped categories** (e.g. "🎮 NDS Roms", "GBA Hacks") plus an **"I'm not sure (Search All)"** option
-3. Pick a category — or choose Search All to scan every channel
-4. Type the ROM name (partial names work: "pokemon" finds all Pokémon ROMs)
-5. The bot returns:
-   - **Best match** — file name, caption, size, download button
-   - **Other matches** — list of similar results with links
-6. After results, you'll see **"Did you find the ROM?"** — tap ✅ or ❌ to help the bot learn
+2. A keyboard appears with your admin's mapped categories. There are two types:
+   - **Channel categories** — searches files from a specific channel
+   - **Tag categories** — searches files from *any* channel whose caption contains a specific hashtag (e.g. `#emulator`)
+   - **"I'm not sure (Search All)"** — scans everything
+3. Type the ROM name. Partial names work — `"pokemon"` finds all Pokémon ROMs
+4. The bot returns the **best match** (file name, caption, size, download link) plus **other matches**
+5. Tap **✅ Yes, got it!** or **❌ No, not what I need** — your feedback improves future results for everyone
 
 ### Other User Commands
+
 | Command | Description |
 |---------|-------------|
-| `/top` | Top 5 most searched ROMs by all users |
+| `/top` | Top 5 most searched ROMs across all users |
 | `/featured` | Up to 10 admin-curated ROMs |
-| `/about` | Bot info, credits, source code link |
-| `/ping` | Check bot response time |
+| `/about` | Version, credits, source code button |
+| `/ping` | Check bot response latency |
+| `/help` | Full command guide |
 
 ---
 
 ## 🔍 Search Algorithm
 
-1. **Normalize** the query — lowercase, trim, collapse whitespace
-2. **Cache check** — if this exact query+category was searched recently, return instantly (< 5ms)
-3. **Channel selection** — query the channel mapped to the chosen category, or all channels for "Search All"
-4. **In-memory index** — messages are loaded from MongoDB into a per-channel Fuse.js index (TTL 30 min). No live API call on every search.
-5. **Fuzzy match** — Fuse.js scores each message:
-   - File name: weight **0.65**
-   - Caption text: weight **0.35**
-   - Threshold: 0.55 (lenient — catches typos, partial names)
-6. **Feedback boost** — results confirmed by past users get a score boost (up to +15%); results users rejected get a small penalty (−10%)
-7. **Re-rank** — results are sorted by final boosted score, best first
-8. **Cache write** — result stored in LRU cache (max 200 entries, 1-hour TTL)
-9. **Record search** — query saved to DB for `/top` command
+1. **Normalize** — lowercase, trim, collapse whitespace
+2. **Cache check** — exact query + category scope cached in memory (< 5 ms hit)
+3. **Scope resolution:**
+   - *Channel category* → load only that channel's messages
+   - *Tag category* → load all channels, filter messages whose caption contains the tag
+   - *Search All* → load all channels unfiltered
+4. **Fuse.js fuzzy match** on the candidate set:
+   - `fileName` weight **0.65** · `caption` weight **0.35**
+   - Threshold 0.55 — tolerates typos and partial titles
+5. **Feedback boost** — results confirmed by past users score up to +15%; rejected results score −10%
+6. **Re-rank** by final boosted score, best first
+7. **Cache write** — LRU cache, max 200 entries, 1-hour TTL
+8. **Record search** — stored for `/top` command
 
 ---
 
@@ -56,45 +57,50 @@ Send `/start` for a welcome message, or `/help` for the full command list.
 ```
 rom-finder-bot/
 ├── src/
-│   ├── index.ts                    # Bot entry point — registers all handlers, launches
+│   ├── index.ts                     # Entry point — registers all handlers, launches bot
 │   ├── config/
-│   │   └── index.ts                # Zod env validation, exports `config`
+│   │   └── index.ts                 # Zod env validation, exports config object
 │   ├── models/
-│   │   ├── User.ts                 # User tracking (blocked/deleted/active)
-│   │   ├── Channel.ts              # Channel → label mappings
-│   │   ├── ChannelMessage.ts       # Indexed ROM files (the search corpus)
-│   │   ├── Search.ts               # Search frequency for /top
-│   │   ├── Featured.ts             # Admin-curated featured list
-│   │   ├── Setting.ts              # Bot settings (request URL, etc.)
-│   │   └── SearchFeedback.ts       # ✅/❌ votes for smart ranking
+│   │   ├── User.ts                  # User records (blocked/deleted tracking)
+│   │   ├── Channel.ts               # Channel → label mappings (channel categories)
+│   │   ├── TagCategory.ts           # Tag → label mappings (tag-based categories)
+│   │   ├── ChannelMessage.ts        # Indexed ROM files — the search corpus
+│   │   ├── Search.ts                # Search frequency tracking for /top
+│   │   ├── Featured.ts              # Admin-curated featured list (up to 10)
+│   │   ├── Setting.ts               # Bot settings (request URL, maintenance, blocked tags)
+│   │   └── SearchFeedback.ts        # ✅/❌ votes used for smart re-ranking
 │   ├── services/
-│   │   ├── database.ts             # MongoDB connection + countDocuments stats
-│   │   ├── search.ts               # Core search engine (Fuse.js + feedback boost)
-│   │   ├── cache.ts                # In-memory LRU cache
-│   │   └── session.ts              # Per-user conversation state (in-memory)
+│   │   ├── database.ts              # MongoDB connection, countDocuments-based stats
+│   │   ├── search.ts                # Core search engine (Fuse.js + tag filter + feedback)
+│   │   ├── cache.ts                 # In-memory LRU cache
+│   │   └── session.ts               # Per-user multi-step conversation state
 │   ├── commands/
-│   │   ├── basic.ts                # /start /help /about /ping
-│   │   ├── discovery.ts            # /top /featured
-│   │   ├── search.ts               # /search + result rendering
-│   │   ├── admin.ts                # /set /db /users /helpa — HTML messages
-│   │   ├── broadcast.ts            # /broadcast
-│   │   └── backfill.ts             # /backfill — index historical channel files
+│   │   ├── basic.ts                 # /start /help /about /ping
+│   │   ├── discovery.ts             # /top /featured
+│   │   ├── search.ts                # /search — guided flow + result rendering
+│   │   ├── admin.ts                 # /set /db /users /helpa
+│   │   ├── broadcast.ts             # /broadcast — 4-step compose/format/preview/send
+│   │   ├── backfill.ts              # /backfill — index historical channel messages
+│   │   ├── maintenance.ts           # /maintenance — toggle user access lock
+│   │   └── unindex.ts               # /unindex — remove files by tag or forward
 │   ├── handlers/
-│   │   ├── channel.ts              # Indexes incoming channel posts live
-│   │   ├── callbacks.ts            # All inline keyboard button handlers
-│   │   └── text.ts                 # Multi-step conversation flow handler
+│   │   ├── channel.ts               # Live-indexes incoming channel posts (respects blocked tags)
+│   │   ├── callbacks.ts             # All inline keyboard button handlers
+│   │   └── text.ts                  # Multi-step text flow (search, mapping, broadcast, tags)
 │   ├── middleware/
-│   │   ├── admin.ts                # Admin-only guard
-│   │   ├── userTracker.ts          # Upserts user record on every message
-│   │   ├── rateLimiter.ts          # 15 req/min per user (admins exempt)
-│   │   └── errorHandler.ts         # Global Telegraf error handler
+│   │   ├── admin.ts                 # Admin-only guard
+│   │   ├── userTracker.ts           # Upserts user record on every message
+│   │   ├── rateLimiter.ts           # 15 req/min per user (admins exempt)
+│   │   ├── maintenance.ts           # Blocks all users when maintenance is ON
+│   │   └── errorHandler.ts          # Global Telegraf error handler
 │   └── utils/
-│       ├── logger.ts               # Winston logger
-│       ├── helpers.ts              # normalizeQuery, buildMessageLink, escaping, etc.
-│       ├── keyboards.ts            # All InlineKeyboardMarkup builders
-│       └── health.ts               # HTTP /health endpoint for Render
-├── .env.example                    # Copy to .env and fill in
-├── render.yaml                     # Render deployment config
+│       ├── logger.ts                # Winston logger
+│       ├── helpers.ts               # normalizeQuery, buildMessageLink, formatFileSize, etc.
+│       ├── keyboards.ts             # All InlineKeyboardMarkup builders
+│       ├── blockedTags.ts           # Cached blocked-tag checker (30s TTL)
+│       └── health.ts                # HTTP /health endpoint for Render keep-alive
+├── .env.example
+├── render.yaml
 ├── tsconfig.json
 └── package.json
 ```
@@ -103,46 +109,48 @@ rom-finder-bot/
 
 ## 🗄️ MongoDB Schema
 
-All collections use `countDocuments()` for stats — `db.stats()` is **not** used (unsupported on Atlas M0 free tier).
+> Atlas M0 does **not** support `db.stats()`. All stats use `countDocuments()`.
 
-### `channelmessages` — The search corpus
+### `channelmessages` — search corpus
 | Field | Type | Notes |
 |-------|------|-------|
-| channelId | String | Source channel ID |
+| channelId | String | Source channel |
 | messageId | Number | Telegram message ID |
-| fileName | String | ROM file name (text-indexed) |
-| caption | String | Full caption (text-indexed) |
+| fileName | String | File name (fuzzy-searched) |
+| caption | String | Caption text (fuzzy-searched) |
 | category | String | Channel label from mapping |
 | fileSize | Number | Bytes |
 | fileId | String | Telegram file_id |
 
 Index: `(channelId, messageId)` unique · `fileName + caption` text
 
-### `channels` — Admin-defined mappings
+### `channels` — channel-based categories
 | Field | Type | Notes |
 |-------|------|-------|
 | channelId | String | Unique |
-| label | String | Button text shown in /search |
-| category | String | = channelId (internal key) |
+| label | String | Button text in /search |
 | mappedBy | Number | Admin user ID |
 
-### `searchfeedbacks` — Smart ranking data
+### `tagcategories` — tag-based categories
+| Field | Type | Notes |
+|-------|------|-------|
+| tag | String | e.g. `#emulator` — unique |
+| label | String | Button text in /search |
+| addedBy | Number | Admin user ID |
+
+### `searchfeedbacks` — smart ranking data
 | Field | Type | Notes |
 |-------|------|-------|
 | normalizedQuery | String | Lowercased query |
-| channelId + messageId | String/Number | Which result |
+| channelId + messageId | — | Identifies the result |
 | gotIt | Boolean | true = confirmed, false = rejected |
-| userId | Number | One vote per user per result |
+| userId | Number | One vote per user per result per query |
 
-### `searches` — For /top command
+### `searches` — `/top` command data
 | Field | Type | Notes |
 |-------|------|-------|
 | normalizedQuery | String | Unique |
-| count | Number | Indexed descending |
-| query | String | Original casing |
-
-### `featureds`, `users`, `settings`
-Standard schemas — see `src/models/` for full definitions.
+| count | Number | Descending index for fast /top queries |
 
 ---
 
@@ -150,35 +158,31 @@ Standard schemas — see `src/models/` for full definitions.
 
 ### Prerequisites
 - Node.js 18+
-- MongoDB Atlas account (free M0 cluster)
+- MongoDB Atlas free M0 cluster
 - Telegram bot token from [@BotFather](https://t.me/BotFather)
 
-### 1 — Install
+### Install
 ```bash
 git clone https://github.com/aapokepikachu/rom-finder-bot
 cd rom-finder-bot
 npm install
-```
-
-### 2 — Configure
-```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
+### Configure `.env`
 ```env
 BOT_TOKEN=1234567890:ABCdef...
 ADMIN_IDS=123456789
 MONGODB_URI=mongodb+srv://user:pass@cluster.mongodb.net/romfinder
 CHANNELS=-1001234567890,-1009876543210
 OWNER_NAME=Your Name
-OWNER_HANDLE=yourtelegramusername     # NO @ symbol
+OWNER_HANDLE=yourtelegramusername    # NO @ symbol
 SOURCE_CODE_URL=https://github.com/yourusername/rom-finder-bot
 ```
 
-### 3 — Run locally
+### Run
 ```bash
-npm run dev     # hot-reload dev mode
+npm run dev     # hot-reload development
 npm run build   # compile TypeScript
 npm start       # run compiled output
 ```
@@ -187,86 +191,105 @@ npm start       # run compiled output
 
 ## 📡 Channel Setup
 
-### ⚠️ Important: File Indexing
-> The bot can **only index files that are posted after it is added as admin** to a channel. Files uploaded before the bot was added will NOT be found by /search.
->
-> **To index existing files:** Use `/backfill` (see below).
+> **Important:** The bot can only index files posted **after** it is added as admin.  
+> For existing files use `/backfill`. See the Backfill section below.
 
-### Steps
-1. **Add the bot as admin** to each channel with "Post Messages" permission
-2. Add channel IDs to the `CHANNELS` env var (comma-separated, each starts with `-100`)
-3. **Map each channel** via `/set` → "Map Channels to Categories":
-   - Tap a channel button
-   - Type a short label (e.g. `🎮 NDS Roms`, `GBA Hacks`)
-   - That label becomes a button in /search
-4. **Backfill old files** with `/backfill` → select the channel
+1. Add the bot as **admin** with "Post Messages" permission in each channel
+2. Add channel IDs (comma-separated) to `CHANNELS` in your environment
+3. Map each channel via `/set` → **Map Channels to Categories** → tap a channel → type its label
+4. Run `/backfill` to index all historical files
 
-### Getting a Channel ID
-Forward any message from the channel to [@userinfobot](https://t.me/userinfobot). Channel IDs always start with `-100`.
+**Getting a channel ID:** Forward any message from the channel to [@userinfobot](https://t.me/userinfobot). Channel IDs always start with `-100`.
 
 ---
 
-## 🔄 Backfill (Indexing Old Files)
+## 🏷️ Tag Categories
 
-`/backfill` scans a channel's message history and indexes all file messages it finds.
+Tag categories let you create a /search button that **filters by hashtag across all channels** — not tied to any single channel.
 
-**How it works:**
-- Iterates message IDs from the last indexed ID (or 1 if fresh)
-- Calls `forwardMessage` for each ID — the only Bot API method that returns full file metadata for channel posts
-- Forwards appear briefly in your private chat then are deleted automatically
+**Example use case:** You have files with `#emulator` in their captions scattered across multiple channels. Create a tag category `#emulator` → `🕹️ Emulators` and users get a dedicated search button that only shows emulator files.
+
+**How to create one:**
+1. `/set` → **Map Channels to Categories**
+2. Tap **🏷️ Set Tag Category** (top button)
+3. Send the tag: `#emulator`
+4. Send the label: `🕹️ Emulators`
+
+**How it works in search:**
+- User taps "🕹️ Emulators"
+- Bot loads all indexed messages from all channels
+- Filters to only those whose caption contains `#emulator`
+- Runs fuzzy search on that filtered set
+
+**Managing tag categories:** `/set` → **Map Channels** → **📋 Manage Tag Categories** → tap any to remove.
+
+---
+
+## 🔄 Backfill
+
+`/backfill` scans a channel's full message history and indexes all file messages found.
+
+**Why it's needed:** The Telegram Bot API has no history endpoint for bots. Files uploaded before the bot was added as admin are invisible. Backfill works by iterating message IDs sequentially and using `forwardMessage` (the only Bot API method that returns full file metadata for channel posts).
+
+**How to run:**
+1. `/maintenance` → Turn ON (prevents users from getting partial results while indexing)
+2. `/backfill` → select a channel (or "All Channels")
+3. Wait — progress updates every 50 messages
+4. `/maintenance` → Turn OFF
+
+**Details:**
+- Resumes from the last indexed ID — safe to re-run after interruption
 - Stops after 50 consecutive missing IDs (handles deleted message gaps)
-- Respects Telegram rate limits (380ms between requests, auto-waits on flood errors)
-- Safe to re-run — resumes from last indexed ID
-
-**Requirements:** Bot must be admin in the channel with at least "Forward Messages" permission.
+- Respects Telegram rate limits: 380ms between requests, auto-waits on flood errors
+- Forwarded messages appear briefly in your private chat then are auto-deleted
 
 ---
 
 ## 🚀 Deploy to Render
 
-### Step 1 — Push to GitHub
+### 1 — Push to GitHub
 ```bash
 git init && git add . && git commit -m "init"
 git remote add origin https://github.com/yourname/rom-finder-bot
 git push -u origin main
 ```
 
-### Step 2 — Create Web Service on Render
+### 2 — Create Web Service
 1. [render.com](https://render.com) → **New → Web Service**
 2. Connect your GitHub repo
-3. Render detects `render.yaml` automatically:
+3. Render auto-detects `render.yaml` — confirm:
    - Build: `npm install && npm run build`
    - Start: `npm start`
    - Plan: Free
 
-### Step 3 — Set Environment Variables
-In Render dashboard → Environment:
+### 3 — Environment Variables
 
 | Key | Value |
 |-----|-------|
-| `BOT_TOKEN` | Your bot token |
+| `BOT_TOKEN` | Your Telegram bot token |
 | `MONGODB_URI` | Atlas connection string |
-| `ADMIN_IDS` | `123456789` |
+| `ADMIN_IDS` | `123456789` (comma-separated for multiple) |
 | `CHANNELS` | `-1001234567890,-1009876543210` |
-| `OWNER_NAME` | `Your Name` |
-| `OWNER_HANDLE` | `yourusername` (no @) |
-| `SOURCE_CODE_URL` | Your GitHub URL |
+| `OWNER_NAME` | Your display name |
+| `OWNER_HANDLE` | Your Telegram username (no @) |
+| `SOURCE_CODE_URL` | Your GitHub repo URL |
 
-> Render automatically sets `PORT` and `RENDER_EXTERNAL_URL` — the bot uses these for webhook mode.
+> Render auto-sets `PORT` and `RENDER_EXTERNAL_URL`. The bot uses these for webhook mode automatically.
 
-### Step 4 — Keep Alive (Free Tier)
-Render free tier sleeps after 15 minutes of no HTTP traffic. Set up a free pinger:
-- [UptimeRobot](https://uptimerobot.com) — ping `https://your-app.onrender.com/health` every 5 minutes
-- [cron-job.org](https://cron-job.org) — same URL, free
+### 4 — Keep Alive (Free Tier)
+Render sleeps after 15 min of no HTTP traffic. Set up a free pinger:
+- [UptimeRobot](https://uptimerobot.com) — ping `https://your-app.onrender.com/health` every 5 min
 
-### Step 5 — First Run Checklist
+### 5 — First Run Checklist
 ```
-✅ Bot deployed and running
-✅ /backfill run for each channel (indexes old files)
+✅ Bot deployed and /ping responds
+✅ /maintenance → Turn ON
+✅ /backfill → run for each channel
+✅ /maintenance → Turn OFF
 ✅ /set → Map Channels → label each channel
+✅ /set → Set Tag Categories (optional)
 ✅ /set → Set Request-It URL (optional)
-✅ /featured → set some featured ROMs (optional)
-✅ /search → verify category buttons appear and results return
+✅ /search → verify category buttons and results work
 ```
 
 ---
@@ -274,132 +297,101 @@ Render free tier sleeps after 15 minutes of no HTTP traffic. Set up a free pinge
 ## 🔒 Security & Rate Limiting
 
 ### Rate Limiter
-Built-in per-user sliding window: **15 requests per 60 seconds**.
+15 requests per 60 seconds per user. Admins are fully exempt.
 
-Why it's needed:
-- Prevents a single user from flooding `/search` and hammering the DB + Fuse.js index
-- Protects Telegram's bot API quota (30 msg/sec global limit)
-- Keeps Render free-tier CPU within limits
-- Stops scripted abuse
+Protects against:
+- Search flooding that hammers the DB + Fuse.js index
+- Telegram API quota abuse (30 msg/sec global limit)
+- Render free-tier CPU spikes
 
-**Admins are fully exempt** — they need to run `/backfill`, `/broadcast`, etc. without throttling.
+Exceeded users receive one friendly warning, then requests are silently dropped until the window resets.
 
-Exceeded users get a friendly message once, then subsequent requests are silently dropped until the window resets.
-
-### Other Security
-- Admin commands protected by `ADMIN_IDS` env check — no roles in DB
-- All inline button actions re-verify admin status
-- Input length validated (search queries: 2–100 chars, labels: 1–50 chars)
-- No user data leaked cross-user
-- Destructive DB operations require confirmation button
-- Bot token never logged
+### Admin Security
+- All admin commands verify `ADMIN_IDS` on every call — no DB roles
+- Inline button callbacks re-verify admin status independently
+- Destructive operations require confirmation button
+- Bot token never appears in logs
 
 ---
 
-## 👮 Admin Guide
+## 👮 Admin Command Reference
 
-### Map a Channel
-1. `/set` → **Map Channels to Categories**
-2. Tap a channel ID button
-3. Type a short label: `🎮 NDS Roms`
-4. Confirm if replacing an existing mapping
-5. The label immediately appears as a button in /search
+### `/set` — Settings Menu
+- **Map Channels to Categories** — label each channel; also access tag category tools here
+- **Set Featured ROMs** — pick positions 1–10, forward a file or send `Title | channelId | msgId`
+- **Set Request-It URL** — shown when no results are found
 
-### Set Featured ROMs (up to 10)
-1. `/set` → **Set Featured ROMs**
-2. Tap a position (#1–#10)
-3. **Forward** a file message from a ROM channel to the bot — OR send: `Title | -100xxxxxxxxxx | messageId`
-
-### Set Request-It URL
-1. `/set` → **Set Request-It URL**
-2. Send a URL (Google Form, group link, etc.)
-3. Appears as a button when no search results are found
-
-### Broadcast
-1. `/broadcast` → type your message (Markdown supported)
-2. Preview appears — confirm or cancel
-3. Sent to all active users (skips blocked/deleted), reports delivery stats
-
-### Maintenance Mode (`/maintenance`)
-Toggles a global maintenance lock:
-- **ON** → all user commands are blocked with a friendly notice; /search, /top, /featured, etc. all show "under maintenance"
-- **OFF** → bot is fully live again
-- Admins are **never** blocked regardless of maintenance state
-- Channel posts (live indexing) pass through so /backfill continues to work
-- State survives restarts (stored in MongoDB)
-
-**Typical workflow:**
-```
-/maintenance → Turn ON
-/backfill → run full channel scan
-/maintenance → Turn OFF
-```
-
-### Unindex Manager (`/unindex`)
-Three tools for keeping unwanted files out of search results:
-
-**1. Block a Tag** (`🏷️ Block a Tag`)
-- Add a hashtag like `#misc` or `#skip` to a file's caption in the channel
-- Then block that tag in `/unindex` → any file with that tag in its caption is:
-  - Removed from the index immediately
-  - Skipped during future /backfill runs
-  - Skipped on live new posts
-- You can view and remove blocked tags from the same menu
-
-**2. Unindex a Specific File** (`📩 Unindex a Specific File`)
-- Forward the exact file message from the ROM channel to the bot
-- That single file is deleted from the index
-- Will not reappear in search results
-- To make the exclusion permanent across resets, also add a blocking tag to its caption
-
-**3. View & Remove Blocked Tags** (`📋 View & Remove Blocked Tags`)
-- Lists all currently blocked tags
-- Tap any tag to unblock it
-
-### Database Tools (`/db`)
-| Action | Description |
+### `/db` — Database Tools
+| Action | What it does |
 |--------|-------------|
-| View Usage Stats | Document counts per collection + estimated storage vs 512MB limit |
-| Clear Search Cache | Invalidates in-memory cache (useful after bulk uploads) |
+| View Usage Stats | Document counts + estimated storage vs 512MB limit |
+| Clear Search Cache | Invalidates in-memory query cache |
 | Clear Message Index | Forces Fuse.js index rebuild on next search |
-| Delete All Data | Nuclear option — requires confirmation |
+| Delete All Data | Wipes everything — requires confirmation |
+
+### `/broadcast` — Message All Users
+4-step flow: compose → pick format (Plain/HTML/Markdown) → validate against Telegram → preview → confirm. Validation sends a silent test message to the admin first — formatting errors are caught before broadcast.
+
+### `/backfill` — Index Historical Files
+Select a channel (or all). Scans all message IDs, indexes files, respects rate limits.
+
+### `/maintenance` — Toggle Maintenance Mode
+- **ON**: all user commands blocked with "under maintenance" notice; admins unaffected; channel indexing continues
+- **OFF**: bot fully live again
+- State persists across restarts (stored in MongoDB)
+
+### `/unindex` — Remove Files from Index
+- **Block a Tag** — files with this tag in their caption are deleted from index and skipped going forward
+- **Unindex a Specific File** — forward the file from a ROM channel to remove it
+- **View & Remove Blocked Tags** — manage the blocked tag list
+
+### `/users` — User Statistics
+Total, active, active today, blocked, deleted.
+
+### `/helpa` — Admin Help
+Full admin command reference in-chat.
 
 ---
 
-## 📊 Performance Notes
+## 📊 Performance Reference
 
 | Metric | Value |
 |--------|-------|
-| Search latency (cache hit) | < 5ms |
-| Search latency (cache miss) | 50–300ms |
+| Cache hit latency | < 5 ms |
+| Cache miss latency | 50–300 ms |
 | In-memory index TTL | 30 minutes |
-| Cache size | Max 200 entries (LRU eviction) |
+| Cache max size | 200 entries (LRU) |
 | Rate limit | 15 req/min per user |
 | Backfill speed | ~2.6 messages/sec |
-| Broadcast delay | 35ms between sends |
-| MongoDB plan | Atlas M0 (512MB) |
+| Broadcast delay | 35 ms between sends |
+| Maintenance cache TTL | 10 seconds |
+| Blocked tags cache TTL | 30 seconds |
+| MongoDB plan | Atlas M0 (512 MB) |
 
 ---
 
 ## 🛠️ Troubleshooting
 
-**Map Channels button doesn't respond?**
-Make sure channels are set in the `CHANNELS` env var and the service is redeployed.
+| Problem | Fix |
+|---------|-----|
+| Map Channels button doesn't respond | Check `CHANNELS` env var is set and redeploy |
+| Search returns no results | Run `/backfill` — files uploaded before the bot was admin aren't indexed |
+| Backfill fails with "Forbidden" | Bot needs admin rights in the channel with "Forward Messages" permission |
+| `/db` stats error | Old versions used `db.stats()` (unsupported on Atlas M0). v1.0.1+ uses `countDocuments()` |
+| MongoDB connection fails | Atlas → Network Access → add `0.0.0.0/0` for Render's dynamic IPs |
+| Bot sleeping on Render | Set up UptimeRobot to ping `/health` every 5 min |
+| Broadcast crashes on `_` in text | Use HTML mode for messages with underscores, or escape as `\_` in Markdown mode |
 
-**Search returns no results?**
-Files must be posted *after* the bot is admin, OR run `/backfill` to index old files.
+---
 
-**Backfill fails with "Forbidden"?**
-The bot needs admin rights in the channel. Add it as admin first.
+## ♻️ Adapting for Other File Types
 
-**MongoDB connection fails?**
-In Atlas → Network Access → add `0.0.0.0/0` (allow all IPs) for Render's dynamic IPs.
+This bot works for any type of file search, not just ROMs. To adapt:
 
-**Stats show "Stats error"?**
-Old versions used `db.stats()` which is unsupported on Atlas M0. v5+ uses `countDocuments()` only.
-
-**Bot sleeping on Render?**
-Set up UptimeRobot to ping `/health` every 5 minutes.
+1. Fork the repo
+2. Replace all instances of `"ROM"` with your file type (e.g. `"Book"`, `"Mod"`, `"Sample"`)
+3. Update channel categories and tag categories to match your content
+4. Deploy as-is — the search, indexing, feedback, and admin tools all work the same way
 
 ---
 

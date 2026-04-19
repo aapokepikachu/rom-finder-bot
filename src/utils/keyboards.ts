@@ -1,23 +1,44 @@
 import { InlineKeyboardButton, InlineKeyboardMarkup } from 'telegraf/typings/core/types/typegram';
 import { chunk } from './helpers';
 import { IChannel } from '../models/Channel';
+import { ITagCategory } from '../models/TagCategory';
 import { SearchResult } from '../services/cache';
+import { TAG_CATEGORY_PREFIX } from '../services/search';
 
-// ── Search ───────────────────────────────────────────────────────────────────
+// ── Search keyboard ──────────────────────────────────────────────────────────
 
-export function buildSearchCategoryKeyboard(mappedChannels: IChannel[]): InlineKeyboardMarkup {
-  const rows: InlineKeyboardButton[][] = mappedChannels.map((ch) => ([{
-    text: ch.label,
-    callback_data: `search_cat:${ch.channelId}`,
-  }]));
+/**
+ * Build the /search category picker.
+ * Shows channel-based categories first, then tag-based categories, then "Search All".
+ */
+export function buildSearchCategoryKeyboard(
+  channelCategories: IChannel[],
+  tagCategories:     ITagCategory[]
+): InlineKeyboardMarkup {
+  const rows: InlineKeyboardButton[][] = [];
+
+  // Channel-based categories
+  for (const ch of channelCategories) {
+    rows.push([{ text: ch.label, callback_data: `search_cat:${ch.channelId}` }]);
+  }
+
+  // Tag-based categories
+  for (const tc of tagCategories) {
+    rows.push([{ text: tc.label, callback_data: `search_cat:${TAG_CATEGORY_PREFIX}${tc.tag}` }]);
+  }
+
+  // Always last
   rows.push([{ text: "🎲 I'm not sure (Search All)", callback_data: 'search_cat:ALL' }]);
+
   return { inline_keyboard: rows };
 }
 
+// ── Result keyboards ─────────────────────────────────────────────────────────
+
 export function buildResultKeyboard(
-  bestMatch: SearchResult,
+  bestMatch:    SearchResult,
   otherMatches: SearchResult[],
-  requestUrl?: string
+  requestUrl?:  string
 ): InlineKeyboardMarkup {
   const rows: InlineKeyboardButton[][] = [
     [{ text: '⬇️ Download', url: bestMatch.messageLink }],
@@ -50,26 +71,40 @@ export function buildRequestItKeyboard(requestUrl?: string): InlineKeyboardMarku
   return { inline_keyboard: rows };
 }
 
-// ── Channel mapping ──────────────────────────────────────────────────────────
+// ── Channel mapping keyboard ─────────────────────────────────────────────────
 
+/**
+ * Shows:
+ *  [🏷️ Set Tag Category]   ← new button at top
+ *  [⚙️ Map -100xxx] or [✅ Label]  ← one per channel
+ *  [❌ Cancel]
+ */
 export function buildChannelMappingKeyboard(
-  channels: string[],
+  channels:       string[],
   mappedChannels: IChannel[]
 ): InlineKeyboardMarkup {
   const mappedMap = new Map(mappedChannels.map((c) => [c.channelId, c]));
-  const buttons: InlineKeyboardButton[] = channels.map((chId) => {
+
+  const rows: InlineKeyboardButton[][] = [
+    // Tag category button at the very top
+    [{ text: '🏷️ Set Tag Category', callback_data: 'tag_cat:new' }],
+  ];
+
+  for (const chId of channels) {
     const mapped = mappedMap.get(chId);
-    return {
-      text: mapped ? `✅ ${mapped.label}` : `⚙️ Map ${chId}`,
+    rows.push([{
+      text:          mapped ? `✅ ${mapped.label}` : `⚙️ Map ${chId}`,
       callback_data: `map_channel:${chId}`,
-    };
-  });
-  const rows = chunk(buttons, 1);
+    }]);
+  }
+
+  rows.push([{ text: '📋 Manage Tag Categories', callback_data: 'tag_cat:list' }]);
   rows.push([{ text: '❌ Cancel', callback_data: 'admin_cancel' }]);
+
   return { inline_keyboard: rows };
 }
 
-// ── Admin ────────────────────────────────────────────────────────────────────
+// ── Admin keyboards ──────────────────────────────────────────────────────────
 
 export function buildAdminSettingsKeyboard(): InlineKeyboardMarkup {
   return {
@@ -106,7 +141,7 @@ export function buildConfirmKeyboard(action: string, payload?: string): InlineKe
 export function buildFeaturedPositionKeyboard(existingPositions: number[]): InlineKeyboardMarkup {
   const positions = Array.from({ length: 10 }, (_, i) => i + 1);
   const buttons: InlineKeyboardButton[] = positions.map((pos) => ({
-    text: existingPositions.includes(pos) ? `🔄 #${pos}` : `#${pos}`,
+    text:          existingPositions.includes(pos) ? `🔄 #${pos}` : `#${pos}`,
     callback_data: `feat_pos:${pos}`,
   }));
   const rows = chunk(buttons, 5);
@@ -121,4 +156,18 @@ export function buildBroadcastConfirmKeyboard(): InlineKeyboardMarkup {
       [{ text: '❌ Cancel',          callback_data: 'admin_cancel'      }],
     ],
   };
+}
+
+// ── Tag category management keyboard ─────────────────────────────────────────
+
+export function buildTagCategoryListKeyboard(
+  tagCategories: ITagCategory[]
+): InlineKeyboardMarkup {
+  const rows: InlineKeyboardButton[][] = tagCategories.map((tc) => ([{
+    text:          `🗑️ Remove: ${tc.label} (${tc.tag})`,
+    callback_data: `tag_cat_remove:${tc.tag}`,
+  }]));
+  rows.push([{ text: '➕ Add New Tag Category', callback_data: 'tag_cat:new'    }]);
+  rows.push([{ text: '⬅️ Back',                 callback_data: 'tag_cat:back'   }]);
+  return { inline_keyboard: rows };
 }

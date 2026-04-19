@@ -38,6 +38,7 @@ export async function helpAdminCommand(ctx: Context): Promise<void> {
     `• /backfill – Index historical channel files\n` +
     `• /maintenance – Toggle maintenance mode\n` +
     `• /unindex – Remove files from search index\n` +
+    `• /maintenance – Toggle maintenance mode (blocks all users)\n` +
     `• /helpa – This help\n\n` +
     `<b>Settings (/set):</b>\n` +
     `• Map channels → search buttons\n` +
@@ -57,7 +58,12 @@ export async function helpAdminCommand(ctx: Context): Promise<void> {
     `<b>Unindex (/unindex):</b>\n` +
     `• Block a tag — skip files with that caption tag\n` +
     `• Unindex a file — forward it to remove from index\n` +
-    `• View/remove blocked tags`,
+    `• View/remove blocked tags\n\n` +
+    `<b>Tag Categories (/set → Map Channels → Set Tag Category):</b>\n` +
+    `• Create a /search button that filters by caption hashtag\n` +
+    `• Step 1: send the tag (e.g. <code>#emulator</code>)\n` +
+    `• Step 2: send the button label (e.g. <code>Emulators</code>)\n` +
+    `• Files across all channels with that tag will appear`,
     { parse_mode: 'HTML' }
   );
 }
