@@ -38,7 +38,6 @@ export async function helpAdminCommand(ctx: Context): Promise<void> {
     `• /backfill – Index historical channel files\n` +
     `• /maintenance – Toggle maintenance mode\n` +
     `• /unindex – Remove files from search index\n` +
-    `• /maintenance – Toggle maintenance mode (blocks all users)\n` +
     `• /helpa – This help\n\n` +
     `<b>Settings (/set):</b>\n` +
     `• Map channels → search buttons\n` +
