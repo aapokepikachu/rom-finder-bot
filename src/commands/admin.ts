@@ -29,40 +29,57 @@ function esc(text: string): string {
 
 export async function helpAdminCommand(ctx: Context): Promise<void> {
   await ctx.reply(
-    `🔧 <b>Admin Command Guide</b>\n\n` +
-    `<b>Commands:</b>\n` +
-    `• /set – Settings menu\n` +
-    `• /db – Database tools\n` +
-    `• /broadcast – Message all users\n` +
-    `• /users – User statistics\n` +
-    `• /backfill – Index historical channel files\n` +
-    `• /maintenance – Toggle maintenance mode\n` +
-    `• /unindex – Remove files from search index\n` +
-    `• /helpa – This help\n\n` +
-    `<b>Settings (/set):</b>\n` +
-    `• Map channels → search buttons\n` +
-    `• Set featured ROMs (up to 10)\n` +
-    `• Set "Request It!" URL\n\n` +
-    `<b>DB Tools (/db):</b>\n` +
-    `• Usage stats (works on Atlas M0)\n` +
-    `• Clear cache / index\n` +
-    `• Delete all data\n\n` +
-    `<b>Backfill (/backfill):</b>\n` +
-    `• Scans old channel messages\n` +
-    `• Indexes files not seen live\n\n` +
-    `<b>Maintenance (/maintenance):</b>\n` +
-    `• Blocks all users while ON\n` +
-    `• Admins always pass through\n` +
-    `• Useful during /backfill or updates\n\n` +
-    `<b>Unindex (/unindex):</b>\n` +
-    `• Block a tag — skip files with that caption tag\n` +
-    `• Unindex a file — forward it to remove from index\n` +
-    `• View/remove blocked tags\n\n` +
-    `<b>Tag Categories (/set → Map Channels → Set Tag Category):</b>\n` +
-    `• Create a /search button that filters by caption hashtag\n` +
-    `• Step 1: send the tag (e.g. <code>#emulator</code>)\n` +
-    `• Step 2: send the button label (e.g. <code>Emulators</code>)\n` +
-    `• Files across all channels with that tag will appear`,
+    `🔧 <b>Admin Command Reference</b>\n\n` +
+
+    `<b>/set</b> — Settings menu\n` +
+    `  • <b>Map Channels</b> — assign a label to each channel; that label becomes a /search category button\n` +
+    `  • <b>Set Tag Category</b> — create a /search button that filters all channels by a caption hashtag (e.g. <code>#emulator</code> → "Emulators" button)\n` +
+    `  • <b>Manage Tag Categories</b> — view and remove existing tag categories\n` +
+    `  • <b>Set Featured ROMs</b> — pin up to 10 ROMs in /featured (forward a file or send <code>Title | channelId | msgId</code>)\n` +
+    `  • <b>Set Request-It URL</b> — shown to users when a search returns no results\n\n` +
+
+    `<b>/db</b> — Database tools\n` +
+    `  • View document counts and estimated storage vs the 512 MB Atlas M0 limit\n` +
+    `  • Clear in-memory search cache or message index\n` +
+    `  • Delete all data (requires confirmation)\n\n` +
+
+    `<b>/users</b> — User statistics\n` +
+    `  • Total, active, active today, blocked, deleted\n\n` +
+
+    `<b>/broadcast</b> — Message all users\n` +
+    `  • 4-step flow: compose → pick format (Plain/HTML/Markdown) → test-send to you for validation → confirm send\n` +
+    `  • Validation catches formatting errors before the broadcast goes out\n\n` +
+
+    `<b>/backfill</b> — Index historical channel files\n` +
+    `  • Scans a channel's full message history and indexes all files\n` +
+    `  • Safe to re-run — resumes from the last indexed ID\n` +
+    `  • Tip: turn /maintenance ON first to avoid partial results during indexing\n\n` +
+
+    `<b>/maintenance</b> — Toggle user access lock\n` +
+    `  • ON: all user commands blocked; admins and channel indexing always continue\n` +
+    `  • OFF: bot fully live again\n` +
+    `  • State persists across restarts\n\n` +
+
+    `<b>/unindex</b> — Remove files from the search index\n` +
+    `  • <b>Block a tag</b> — deletes all files with that caption tag from index; skips them in future indexing\n` +
+    `  • <b>Unindex a specific file</b> — forward the file from the channel to remove it\n` +
+    `  • <b>View/remove blocked tags</b> — manage the blocked tag list\n\n` +
+
+    `<b>/random_edit</b> — Control what appears in /random\n` +
+    `  • <b>Exclude by tag</b> — hides all files with a caption tag from /random (they stay searchable)\n` +
+    `  • <b>Exclude a specific file</b> — forward it to hide from /random only\n` +
+    `  • <b>View/remove exclusions</b> — manage both excluded tags and individual files\n\n` +
+
+    `<b>/set_search_hint</b> — Customise the "be more specific" message
+` +
+    `  • Shown when a user types a single generic word during /search
+` +
+    `  • Use <code>{query}</code> in the text — replaced with the user's word
+` +
+    `  • Send /set_search_hint again to update it any time
+
+` +
+    `<b>/helpa</b> — This reference`,
     { parse_mode: 'HTML' }
   );
 }
@@ -199,6 +216,25 @@ export async function handleSetRequestUrl(ctx: Context): Promise<void> {
     `Current: ${current ? `<code>${esc(current)}</code>` : '<i>Not set</i>'}\n\n` +
     `Send the new URL (e.g. a Google Form or group link).\n` +
     `<i>Send /cancel to abort.</i>`,
+    { parse_mode: 'HTML' }
+  );
+}
+
+export async function setSearchHintCommand(ctx: Context): Promise<void> {
+  const s = await Setting.findOne({ key: SETTING_KEYS.VAGUE_SEARCH_HINT }).lean();
+  const current = s?.value;
+
+  setSession(ctx.from!.id, { step: 'set_search_hint' });
+
+  await ctx.reply(
+    `✏️ <b>Set Vague-Search Hint</b>\n\n` +
+    `This message appears when a user types a single generic word (e.g. <code>Pokemon</code>) after selecting a category.\n\n` +
+    `Use <code>{query}</code> anywhere in the text — it will be replaced with the user's actual word.\n\n` +
+    `<b>Current hint:</b>\n${current ? esc(current) : '<i>Default (not customised)</i>'}\n\n` +
+    `<b>Send your new hint text now.</b>\n` +
+    `Max 600 characters. Example:\n` +
+    `<code>💡 "{query}" is very broad — try adding a platform like GBA or NDS!</code>\n\n` +
+    `<i>Send /cancel to keep the current hint.</i>`,
     { parse_mode: 'HTML' }
   );
 }
