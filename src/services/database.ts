@@ -63,13 +63,15 @@ export function estimateStorageUsage(counts: Record<string, number>): {
 } {
   // Rough avg bytes per document per collection
   const AVG_SIZES: Record<string, number> = {
-    ChannelMessage: 600,
-    User:           250,
-    Search:         120,
-    Channel:        150,
-    Featured:       200,
-    Setting:        100,
-    SearchFeedback: 180,
+    ChannelMessage:   600,
+    User:             250,
+    Search:           120,
+    Channel:          150,
+    Featured:         200,
+    Setting:          100,
+    SearchFeedback:   180,
+    FailedSearch:     150,
+    CategoryFeedback: 160,
   };
 
   let totalBytes = 0;

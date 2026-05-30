@@ -22,8 +22,9 @@ import { broadcastCommand }             from './commands/broadcast';
 import { backfillCommand }    from './commands/backfill';
 import { maintenanceCommand } from './commands/maintenance';
 import { unindexCommand }     from './commands/unindex';
-import { randomCommand }      from './commands/random';
-import { randomEditCommand }  from './commands/random_edit';
+import { randomCommand }          from './commands/random';
+import { randomEditCommand }      from './commands/random_edit';
+import { failedSearchesCommand }  from './commands/failed_searches';
 
 // Handlers
 import { channelPostHandler, editedChannelPostHandler } from './handlers/channel';
@@ -62,7 +63,8 @@ async function main(): Promise<void> {
   bot.command('maintenance',  adminOnly(), maintenanceCommand);
   bot.command('unindex',      adminOnly(), unindexCommand);
   bot.command('random_edit',   adminOnly(), randomEditCommand);
-  bot.command('set_search_hint', adminOnly(), setSearchHintCommand);
+  bot.command('set_search_hint',    adminOnly(), setSearchHintCommand);
+  bot.command('failed_searches',    adminOnly(), failedSearchesCommand);
 
   // ── Channel indexing ───────────────────────────────────────────────────
   bot.on('channel_post',        channelPostHandler);

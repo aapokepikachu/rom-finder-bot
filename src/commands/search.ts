@@ -9,6 +9,7 @@ import {
   buildResultKeyboard,
   buildRequestItKeyboard,
   buildFeedbackKeyboard,
+  buildNoResultsKeyboard,
 } from '../utils/keyboards';
 import {
   escapeMarkdown,
@@ -138,7 +139,12 @@ export async function sendSearchResults(
   const loadingMsg = await ctx.reply('🔍 Searching... please wait');
 
   try {
-    const response = await searchService.search({ query, category, userId });
+    const response = await searchService.search({
+      query,
+      category,
+      categoryLabel,
+      userId,
+    });
     await ctx.telegram.deleteMessage(ctx.chat!.id, loadingMsg.message_id).catch(() => {});
 
     const requestSetting = await Setting.findOne({ key: SETTING_KEYS.REQUEST_URL }).lean();
@@ -147,13 +153,24 @@ export async function sendSearchResults(
     if (!response.bestMatch) {
       let text = `❌ <b>No Results Found</b>\n\nNo ROMs matched: <b>${esc(query)}</b>\n`;
       if (categoryLabel) text += `Category: <b>${esc(categoryLabel)}</b>\n`;
-      if (response.suggestions.length > 0) {
+
+      // "Did you mean X?" suggestions from loose fuzzy pass
+      if (response.didYouMean.length > 0) {
+        text += `\n🤔 <b>Did you mean one of these?</b>\n`;
+        response.didYouMean.forEach((name) => {
+          text += `• <code>${esc(name)}</code>\n`;
+        });
+        text += `\n<i>Try searching with one of those names above.</i>\n`;
+      } else if (response.suggestions.length > 0) {
         text += `\n💡 <b>Suggestions:</b>\n`;
         response.suggestions.forEach((s) => { text += `• ${esc(s)}\n`; });
       }
+
+      // Offer to try a different category if one was selected
+      const keyboard = buildNoResultsKeyboard(requestUrl, !!category);
       await ctx.reply(text, {
         parse_mode:   'HTML',
-        reply_markup: buildRequestItKeyboard(requestUrl),
+        reply_markup: keyboard,
       });
       clearSession(userId);
       return;
@@ -174,16 +191,28 @@ export async function sendSearchResults(
       });
     }
 
-    // Feedback
-    const best           = response.bestMatch;
-    const feedbackPayload = `${best.channelId}:${best.messageId}:${encodeURIComponent(query)}`;
-    await ctx.reply(
-      '❓ <b>Did you find the ROM you were looking for?</b>\n<i>Your feedback improves future results.</i>',
-      {
-        parse_mode:   'HTML',
-        reply_markup: buildFeedbackKeyboard(feedbackPayload),
-      }
-    );
+    // Feedback — encode category info so we can record CategoryFeedback on vote
+    const best            = response.bestMatch;
+    const encodedQuery    = encodeURIComponent(query);
+    const encodedCategory = encodeURIComponent(category || 'ALL');
+    const encodedLabel    = encodeURIComponent(categoryLabel || 'All');
+    const feedbackPayload =
+      `${best.channelId}:${best.messageId}:${encodedQuery}:${encodedCategory}:${encodedLabel}`;
+
+    // If this category has a high miss rate, nudge the user
+    let feedbackText =
+      '❓ <b>Did you find the ROM you were looking for?</b>\n' +
+      '<i>Your feedback improves future results.</i>';
+    if (response.categoryMissRate >= 0.6 && category && category !== 'ALL') {
+      feedbackText +=
+        `\n\n💡 <i>Tip: Many users searching in <b>${esc(categoryLabel || category)}</b> ` +
+        `don't find what they need here. Try <b>Search All</b> for broader results!</i>`;
+    }
+
+    await ctx.reply(feedbackText, {
+      parse_mode:   'HTML',
+      reply_markup: buildFeedbackKeyboard(feedbackPayload),
+    });
 
     clearSession(userId);
   } catch (error) {

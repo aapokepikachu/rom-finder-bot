@@ -171,3 +171,27 @@ export function buildTagCategoryListKeyboard(
   rows.push([{ text: '⬅️ Back',                 callback_data: 'tag_cat:back'   }]);
   return { inline_keyboard: rows };
 }
+
+// ── No-results keyboard ───────────────────────────────────────────────────────
+
+/**
+ * Shown when a search returns zero results.
+ * If the user searched within a category, offer to try all channels.
+ */
+export function buildNoResultsKeyboard(
+  requestUrl?: string,
+  hadCategory?: boolean
+): InlineKeyboardMarkup {
+  const rows: InlineKeyboardButton[][] = [];
+
+  if (hadCategory) {
+    rows.push([{ text: '🔍 Try Searching All Channels', callback_data: 'search_no_result_all' }]);
+  }
+  rows.push([{ text: '🔄 Search Again', callback_data: 'search_again' }]);
+
+  if (requestUrl) {
+    rows.push([{ text: '📩 Request This ROM', url: requestUrl }]);
+  }
+
+  return { inline_keyboard: rows };
+}

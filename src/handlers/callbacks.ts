@@ -42,6 +42,15 @@ import {
 } from '../commands/random_edit';
 import { randomCommand } from '../commands/random';
 import { sendSearchResults } from '../commands/search';
+import {
+  failedSearchesCommand,
+  handleFsTopAll,
+  handleFsTopByCat,
+  handleFsBadCats,
+  handleFsClearPrompt,
+  handleFsClearConfirm,
+} from '../commands/failed_searches';
+import { CategoryFeedback } from '../models/CategoryFeedback';
 import { parseCallbackData, escapeMarkdown, normalizeQuery } from '../utils/helpers';
 import { TAG_CATEGORY_PREFIX, isTagCategory } from '../services/search';
 import { buildTagCategoryListKeyboard }       from '../utils/keyboards';
@@ -152,21 +161,30 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
 
         // ── Feedback ─────────────────────────────────────────────────────
         case 'feedback': {
-          // payload format: yes:channelId:messageId:encodedQuery  OR  no:channelId:...
-          const parts = payload.split(':');
-          const vote        = parts[0];           // "yes" or "no"
-          const channelId   = parts[1];
-          const messageId   = parseInt(parts[2], 10);
-          const rawQuery    = decodeURIComponent(parts.slice(3).join(':'));
-          const normalized  = normalizeQuery(rawQuery);
-          const gotIt       = vote === 'yes';
+          // payload format: vote:channelId:messageId:encodedQuery:encodedCategory:encodedLabel
+          // (category and label may be absent for old-format votes — handled safely)
+          const parts          = payload.split(':');
+          const vote           = parts[0];                   // "yes" or "no"
+          const channelId      = parts[1];
+          const messageId      = parseInt(parts[2], 10);
+          const rawQuery       = decodeURIComponent(parts[3] || '');
+          const rawCategory    = decodeURIComponent(parts[4] || 'ALL');
+          const rawLabel       = decodeURIComponent(parts[5] || 'All');
+          const normalized     = normalizeQuery(rawQuery);
+          const gotIt          = vote === 'yes';
 
-          // Get file name for reference
+          if (!channelId || isNaN(messageId) || !rawQuery) {
+            await ctx.answerCbQuery('⚠️ Invalid feedback data.');
+            break;
+          }
+
+          // Get file name for SearchFeedback record
           const msg = await ChannelMessage.findOne(
             { channelId, messageId },
             'fileName'
           ).lean();
 
+          // Record result-level feedback (for score boost/decay)
           try {
             await SearchFeedback.findOneAndUpdate(
               { normalizedQuery: normalized, channelId, messageId, userId },
@@ -174,27 +192,41 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
               { upsert: true }
             );
           } catch (e: any) {
-            // Duplicate key = already voted, just update
+            if (e.code !== 11000) throw e; // duplicate = already voted, ignore
+          }
+
+          // Record category-level feedback (for miss-rate analytics)
+          try {
+            await CategoryFeedback.findOneAndUpdate(
+              { normalizedQuery: normalized, category: rawCategory, userId },
+              { $set: { helpful: gotIt, categoryLabel: rawLabel } },
+              { upsert: true }
+            );
+          } catch (e: any) {
             if (e.code !== 11000) throw e;
           }
 
-          // Invalidate cache so next search picks up the boost
+          // Invalidate cache so next search picks up the updated boost
           cacheService.invalidate(normalized);
 
           if (gotIt) {
             await ctx.answerCbQuery('✅ Great! Thanks for the feedback!');
             await ctx.editMessageText(
-              '✅ *Glad you found it\\!* Your feedback helps improve results\\.',
-              { parse_mode: 'MarkdownV2' }
+              '✅ <b>Glad you found it!</b> Your feedback helps improve results.',
+              { parse_mode: 'HTML' }
             );
           } else {
-            await ctx.answerCbQuery('Got it. Let\'s try again!');
+            await ctx.answerCbQuery("Got it. Let's try again!");
             await ctx.editMessageText(
-              `❌ *Sorry about that\\!*\n\n` +
-              `Your feedback is recorded — that result will be ranked lower next time\\.\n\n` +
+              `❌ <b>Sorry about that!</b>
+
+` +
+              `Your feedback is recorded — that result will be ranked lower next time.
+
+` +
               `Would you like to search again?`,
               {
-                parse_mode: 'MarkdownV2',
+                parse_mode: 'HTML',
                 reply_markup: {
                   inline_keyboard: [[
                     { text: '🔄 Search Again', callback_data: 'search_again' },
@@ -521,6 +553,38 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
           await ctx.answerCbQuery('🔄 Starting backfill...');
           await ctx.deleteMessage().catch(() => {});
           await runBackfill(ctx, bot, payload);
+          break;
+        }
+
+        // ── No-result: try all channels ──────────────────────────────────
+        case 'search_no_result_all': {
+          await ctx.answerCbQuery('🔍 Searching all channels...');
+          await ctx.deleteMessage().catch(() => {});
+          const sess = getSession(userId);
+          const q = sess.step === 'search_query' ? (sess as any).lastQuery : undefined;
+          // Re-open search with no category
+          clearSession(userId);
+          const { searchCommand } = await import('../commands/search');
+          await searchCommand(ctx);
+          break;
+        }
+
+        // ── Admin: Failed searches analytics ─────────────────────────────
+        case 'fs': {
+          if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
+          switch (payload) {
+            case 'top_all':      await handleFsTopAll(ctx);      break;
+            case 'top_by_cat':   await handleFsTopByCat(ctx);    break;
+            case 'bad_cats':     await handleFsBadCats(ctx);     break;
+            case 'clear_prompt': await handleFsClearPrompt(ctx); break;
+            case 'clear_confirm':await handleFsClearConfirm(ctx);break;
+            case 'back': {
+              await ctx.answerCbQuery();
+              await ctx.deleteMessage().catch(() => {});
+              await failedSearchesCommand(ctx);
+              break;
+            }
+          }
           break;
         }
 

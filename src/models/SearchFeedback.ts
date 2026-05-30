@@ -36,4 +36,7 @@ feedbackSchema.index(
 // For aggregating boost scores per result
 feedbackSchema.index({ normalizedQuery: 1, channelId: 1, messageId: 1 });
 
+// For decay: querying by recency
+feedbackSchema.index({ createdAt: -1 });
+
 export const SearchFeedback = mongoose.model<ISearchFeedback>('SearchFeedback', feedbackSchema);

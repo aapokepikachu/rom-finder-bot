@@ -4,28 +4,32 @@ import { Channel } from '../models/Channel';
 import { Search } from '../models/Search';
 import { ChannelMessage } from '../models/ChannelMessage';
 import { SearchFeedback } from '../models/SearchFeedback';
+import { FailedSearch } from '../models/FailedSearch';
 import { cacheService, SearchResult, CachedResult } from './cache';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { normalizeQuery, buildMessageLink } from '../utils/helpers';
 
 export interface SearchOptions {
-  query:    string;
+  query:          string;
   /**
    * How to scope the search:
    *   undefined        → search all channels
    *   "tag::#emulator" → filter by caption tag across all channels
    *   "-100xxxx"       → filter to one specific channel ID
    */
-  category?: string;
-  userId:   number;
+  category?:      string;
+  categoryLabel?: string;   // human-readable label for failed-search logging
+  userId:         number;
 }
 
 export interface SearchResponse {
-  bestMatch:    SearchResult | null;
-  otherMatches: SearchResult[];
-  fromCache:    boolean;
-  suggestions:  string[];
+  bestMatch:         SearchResult | null;
+  otherMatches:      SearchResult[];
+  fromCache:         boolean;
+  suggestions:       string[];
+  didYouMean:        string[];   // close-but-below-threshold file name suggestions
+  categoryMissRate:  number;     // 0–1: fraction of ❌ votes for this category+query
 }
 
 interface IndexedMessage {
@@ -37,13 +41,16 @@ interface IndexedMessage {
 }
 
 interface MessageIndex {
-  channelId:  string;
-  messages:   IndexedMessage[];
-  indexedAt:  number;
+  channelId: string;
+  messages:  IndexedMessage[];
+  indexedAt: number;
 }
 
 const messageIndexes = new Map<string, MessageIndex>();
 const INDEX_TTL = 30 * 60 * 1000;
+
+// Feedback decay: votes older than DECAY_HALF_LIFE_DAYS have half the weight
+const DECAY_HALF_LIFE_DAYS = 30;
 
 /** Prefix used to distinguish tag-based categories from channel IDs */
 export const TAG_CATEGORY_PREFIX = 'tag::';
@@ -64,24 +71,26 @@ export class SearchService {
   }
 
   async search(options: SearchOptions): Promise<SearchResponse> {
-    const { query, category, userId } = options;
-    const normalized = normalizeQuery(query);
-    const cacheKey   = category || 'ALL';
+    const { query, category, categoryLabel, userId } = options;
+    const normalized  = normalizeQuery(query);
+    const cacheKey    = category || 'ALL';
+    const labelForLog = categoryLabel || (category ? category : 'All');
 
-    // Cache check
+    // ── Cache check ──────────────────────────────────────────────────────
     const cached = cacheService.get(normalized, cacheKey);
     if (cached) {
       logger.debug(`Cache HIT query="${normalized}" scope="${cacheKey}"`);
       await this.recordSearch(query, normalized);
-      return { ...cached, fromCache: true, suggestions: [] };
+      // Still compute category miss rate even on cache hits (cheap aggregation)
+      const categoryMissRate = await this.getCategoryMissRate(normalized, cacheKey);
+      return { ...cached, fromCache: true, suggestions: [], didYouMean: [], categoryMissRate };
     }
 
-    // Load candidate messages
+    // ── Load candidate messages ──────────────────────────────────────────
     let allMessages: (IndexedMessage & { channelId: string })[] = [];
 
     if (category && isTagCategory(category)) {
-      // Tag-based: load all channels, then filter by tag in caption
-      const tag = extractTag(category);
+      const tag        = extractTag(category);
       const channelIds = await this.getAllChannelIds();
       for (const channelId of channelIds) {
         const msgs = await this.getChannelMessages(channelId);
@@ -89,13 +98,10 @@ export class SearchService {
           .filter((m) => m.caption.toLowerCase().includes(tag.toLowerCase()))
           .forEach((m) => allMessages.push({ ...m, channelId }));
       }
-      logger.debug(`Tag search "${tag}": ${allMessages.length} matching messages`);
     } else if (category) {
-      // Channel-based: only load that specific channel
       const msgs = await this.getChannelMessages(category);
       msgs.forEach((m) => allMessages.push({ ...m, channelId: category }));
     } else {
-      // Global: load all channels
       const channelIds = await this.getAllChannelIds();
       for (const channelId of channelIds) {
         const msgs = await this.getChannelMessages(channelId);
@@ -106,48 +112,83 @@ export class SearchService {
     logger.debug(`Search "${normalized}": ${allMessages.length} candidates, scope="${cacheKey}"`);
 
     if (allMessages.length === 0) {
-      await this.recordSearch(query, normalized);
+      await Promise.all([
+        this.recordSearch(query, normalized),
+        this.recordFailedSearch(query, normalized, cacheKey, labelForLog),
+      ]);
       return {
-        bestMatch:    null,
-        otherMatches: [],
-        fromCache:    false,
-        suggestions:  this.generateSuggestions(query),
+        bestMatch:        null,
+        otherMatches:     [],
+        fromCache:        false,
+        suggestions:      this.generateSuggestions(query),
+        didYouMean:       [],
+        categoryMissRate: 0,
       };
     }
 
-    // Fuse.js fuzzy search
+    // ── Fuse.js fuzzy search (primary threshold) ─────────────────────────
     const fuse = new Fuse(allMessages, {
       keys: [
         { name: 'fileName', weight: 0.65 },
         { name: 'caption',  weight: 0.35 },
       ],
-      includeScore:    true,
-      threshold:       0.55,
+      includeScore:       true,
+      threshold:          0.55,
       minMatchCharLength: 2,
-      ignoreLocation:  true,
+      ignoreLocation:     true,
     });
 
     const fuseResults = fuse.search(normalized);
 
+    // ── "Did you mean X?" — wider threshold pass when main search fails ──
+    // Run a separate pass at a looser threshold to surface near-misses.
+    // These are never shown as results, only as "did you mean?" hints.
+    let didYouMean: string[] = [];
     if (fuseResults.length === 0) {
-      await this.recordSearch(query, normalized);
+      const looseFuse = new Fuse(allMessages, {
+        keys: [
+          { name: 'fileName', weight: 0.65 },
+          { name: 'caption',  weight: 0.35 },
+        ],
+        includeScore:       true,
+        threshold:          0.75,   // much looser — picks up close-ish names
+        minMatchCharLength: 2,
+        ignoreLocation:     true,
+      });
+      const looseResults = looseFuse.search(normalized);
+      didYouMean = [...new Set(
+        looseResults
+          .slice(0, 5)
+          .map((r) => r.item.fileName)
+          .filter((name) => name && name.length > 0)
+      )].slice(0, 3);
+    }
+
+    if (fuseResults.length === 0) {
+      await Promise.all([
+        this.recordSearch(query, normalized),
+        this.recordFailedSearch(query, normalized, cacheKey, labelForLog),
+      ]);
       return {
-        bestMatch:    null,
-        otherMatches: [],
-        fromCache:    false,
-        suggestions:  this.generateSuggestions(query),
+        bestMatch:        null,
+        otherMatches:     [],
+        fromCache:        false,
+        suggestions:      this.generateSuggestions(query),
+        didYouMean,
+        categoryMissRate: 0,
       };
     }
 
-    // Apply feedback boost scores
+    // ── Apply decay-weighted feedback boosts ─────────────────────────────
     const feedbackBoosts = await this.getFeedbackBoosts(normalized);
+    const categoryMissRate = await this.getCategoryMissRate(normalized, cacheKey);
 
     const searchResults: SearchResult[] = fuseResults
       .slice(0, config.MAX_RESULTS)
       .map((r) => {
-        const baseScore = 1 - (r.score ?? 1);
-        const boostKey  = `${r.item.channelId}:${r.item.messageId}`;
-        const boost     = feedbackBoosts.get(boostKey) ?? 0;
+        const baseScore  = 1 - (r.score ?? 1);
+        const boostKey   = `${r.item.channelId}:${r.item.messageId}`;
+        const boost      = feedbackBoosts.get(boostKey) ?? 0;
         const finalScore = Math.min(1, Math.max(0, baseScore + boost));
         return {
           channelId:   r.item.channelId,
@@ -173,31 +214,101 @@ export class SearchService {
     cacheService.set(normalized, cacheKey, response);
     await this.recordSearch(query, normalized);
 
-    return { ...response, fromCache: false, suggestions: [] };
+    return { ...response, fromCache: false, suggestions: [], didYouMean, categoryMissRate };
   }
 
+  // ── Decay-weighted feedback boosts ─────────────────────────────────────
+  /**
+   * Computes a score boost per result for a given query.
+   * Recent votes count more than old ones via exponential decay.
+   * Decay half-life: DECAY_HALF_LIFE_DAYS days.
+   * Boost range: -0.10 (all ❌) to +0.15 (all ✅)
+   */
   private async getFeedbackBoosts(normalizedQuery: string): Promise<Map<string, number>> {
     const boosts = new Map<string, number>();
     try {
-      const agg = await SearchFeedback.aggregate([
-        { $match: { normalizedQuery } },
-        {
-          $group: {
-            _id:           { channelId: '$channelId', messageId: '$messageId' },
-            gotItCount:    { $sum: { $cond: ['$gotIt', 1, 0] } },
-            total:         { $sum: 1 },
-          },
-        },
-      ]);
-      for (const row of agg) {
-        const ratio = row.gotItCount / row.total;
-        const boost = (ratio - 0.5) * 0.30;
-        boosts.set(`${row._id.channelId}:${row._id.messageId}`, boost);
+      const votes = await SearchFeedback.find(
+        { normalizedQuery },
+        'channelId messageId gotIt createdAt'
+      ).lean();
+
+      if (votes.length === 0) return boosts;
+
+      const now = Date.now();
+      const halfLifeMs = DECAY_HALF_LIFE_DAYS * 24 * 60 * 60 * 1000;
+
+      // Group votes by result, computing decay-weighted sum
+      const grouped = new Map<string, { weightedYes: number; weightedTotal: number }>();
+      for (const vote of votes) {
+        const key     = `${vote.channelId}:${vote.messageId}`;
+        const ageMs   = now - new Date(vote.createdAt).getTime();
+        const weight  = Math.pow(0.5, ageMs / halfLifeMs);  // exponential decay
+
+        if (!grouped.has(key)) grouped.set(key, { weightedYes: 0, weightedTotal: 0 });
+        const g = grouped.get(key)!;
+        g.weightedTotal += weight;
+        if (vote.gotIt) g.weightedYes += weight;
+      }
+
+      for (const [key, { weightedYes, weightedTotal }] of grouped) {
+        const ratio = weightedYes / weightedTotal;
+        // ratio=1.0 → +0.15, ratio=0.5 → 0.0, ratio=0.0 → -0.10
+        const boost = ratio >= 0.5
+          ? (ratio - 0.5) * 0.30     // max +0.15
+          : (ratio - 0.5) * 0.20;    // max -0.10
+        boosts.set(key, boost);
       }
     } catch (err) {
       logger.warn('getFeedbackBoosts error:', err);
     }
     return boosts;
+  }
+
+  // ── Category miss-rate ──────────────────────────────────────────────────
+  /**
+   * Returns the fraction of ❌ votes for this query+category combination.
+   * Used to suggest "try a different category?" in the UI.
+   */
+  async getCategoryMissRate(normalizedQuery: string, category: string): Promise<number> {
+    try {
+      const { CategoryFeedback } = await import('../models/CategoryFeedback');
+      const agg = await CategoryFeedback.aggregate([
+        { $match: { normalizedQuery, category } },
+        {
+          $group: {
+            _id:      null,
+            total:    { $sum: 1 },
+            misses:   { $sum: { $cond: [{ $eq: ['$helpful', false] }, 1, 0] } },
+          },
+        },
+      ]);
+      if (!agg[0] || agg[0].total < 3) return 0;  // need at least 3 votes to be meaningful
+      return agg[0].misses / agg[0].total;
+    } catch (err) {
+      logger.warn('getCategoryMissRate error:', err);
+      return 0;
+    }
+  }
+
+  // ── Record failed search ────────────────────────────────────────────────
+  private async recordFailedSearch(
+    original:      string,
+    normalized:    string,
+    category:      string,
+    categoryLabel: string
+  ): Promise<void> {
+    try {
+      await FailedSearch.findOneAndUpdate(
+        { normalizedQuery: normalized, category },
+        {
+          $inc: { count: 1 },
+          $set: { query: original, categoryLabel, lastFailedAt: new Date() },
+        },
+        { upsert: true }
+      );
+    } catch (err) {
+      logger.warn('Failed to record failed search:', err);
+    }
   }
 
   private async getAllChannelIds(): Promise<string[]> {

@@ -76,9 +76,21 @@ export async function helpAdminCommand(ctx: Context): Promise<void> {
 ` +
     `  • Use <code>{query}</code> in the text — replaced with the user's word
 ` +
-    `  • Send /set_search_hint again to update it any time
+    `  • Send /set_search_hint again to update it any time\n\n` +
 
-` +
+    `<b>/failed_searches</b> — Search failure analytics\n` +
+    `  • Top Failed Queries — queries with zero results, sorted by frequency\n` +
+    `  • Failed by Category — same data per search category\n` +
+    `  • High-Miss Categories — categories with most bad feedback (needs 5+ votes)\n` +
+    `  • Clear Log — reset after you have reviewed and acted on it\n` +
+    `  Use regularly to discover what to /backfill next\n\n` +
+
+    `<b>Automatic Smart Search (no config needed)</b>\n` +
+    `  • Feedback decay — votes older than ~30 days lose weight\n` +
+    `  • Did you mean X? — close file name suggestions on zero results\n` +
+    `  • Category miss-rate tip — hint to try Search All shown when category has high miss rate\n` +
+    `  • Try all channels button — on zero-result pages when a category was used\n\n` +
+
     `<b>/helpa</b> — This reference`,
     { parse_mode: 'HTML' }
   );
@@ -138,7 +150,9 @@ export async function handleDbStats(ctx: Context): Promise<void> {
       `• 🔍 Search Records: <b>${counts['Search'] ?? 0}</b>\n` +
       `• 📡 Channel Mappings: <b>${counts['Channel'] ?? 0}</b>\n` +
       `• ⭐ Featured ROMs: <b>${counts['Featured'] ?? 0}</b>\n` +
-      `• 💬 Feedback: <b>${counts['SearchFeedback'] ?? 0}</b>\n\n` +
+      `• 💬 Result Feedback: <b>${counts['SearchFeedback'] ?? 0}</b>\n` +
+      `• 🏷️ Category Feedback: <b>${counts['CategoryFeedback'] ?? 0}</b>\n` +
+      `• ❌ Failed Searches: <b>${counts['FailedSearch'] ?? 0}</b>\n\n` +
       `<b>Storage (estimated):</b>\n` +
       `${emoji} ~${storage.estimatedMB.toFixed(2)} MB / 512 MB (${storage.percentUsed})\n\n` +
       `<b>Cache (in-memory):</b>\n` +
