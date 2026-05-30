@@ -18,8 +18,11 @@ const settingSchema = new Schema<ISetting>(
 export const Setting = mongoose.model<ISetting>('Setting', settingSchema);
 
 export const SETTING_KEYS = {
-  REQUEST_URL:    'request_url',
-  WELCOME_MESSAGE:'welcome_message',
-  MAINTENANCE:    'maintenance',       // value: 'on' | 'off'
-  BLOCKED_TAGS:   'blocked_tags',      // value: comma-separated tags e.g. "#misc,#test"
+  REQUEST_URL:          'request_url',
+  WELCOME_MESSAGE:      'welcome_message',
+  MAINTENANCE:          'maintenance',           // value: 'on' | 'off'
+  BLOCKED_TAGS:         'blocked_tags',          // comma-separated e.g. "#misc,#test"
+  RANDOM_EXCLUDED_TAGS: 'random_excluded_tags',  // tags hidden from /random
+  RANDOM_EXCLUDED_IDS:  'random_excluded_ids',   // "channelId:messageId" pairs hidden from /random
+  VAGUE_SEARCH_HINT:    'vague_search_hint',     // custom hint shown on vague single-word queries
 } as const;

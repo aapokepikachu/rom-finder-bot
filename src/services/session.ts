@@ -11,11 +11,14 @@ export type SessionState =
   | { step: 'set_featured_pick_pos' }
   | { step: 'set_featured_pick_msg'; position: number }
   | { step: 'map_channel_label'; channelId: string }
-  | { step: 'tag_cat_awaiting_tag' }          // step 1: waiting for the #tag
-  | { step: 'tag_cat_awaiting_label'; tag: string }  // step 2: waiting for the button label
+  | { step: 'tag_cat_awaiting_tag' }
+  | { step: 'tag_cat_awaiting_label'; tag: string }
   | { step: 'await_more_results'; results: import('./cache').SearchResult[]; requestUrl?: string }
   | { step: 'unindex_by_tag' }
-  | { step: 'unindex_by_forward' };
+  | { step: 'unindex_by_forward' }
+  | { step: 'rand_exclude_tag' }
+  | { step: 'rand_exclude_file' }
+  | { step: 'set_search_hint' };
 
 interface SessionEntry {
   state: SessionState;

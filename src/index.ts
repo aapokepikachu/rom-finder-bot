@@ -17,11 +17,13 @@ import { errorHandler } from './middleware/errorHandler';
 import { startCommand, helpCommand, aboutCommand, pingCommand } from './commands/basic';
 import { topCommand, featuredCommand }  from './commands/discovery';
 import { searchCommand }                from './commands/search';
-import { helpAdminCommand, setCommand, dbCommand, usersCommand } from './commands/admin';
+import { helpAdminCommand, setCommand, dbCommand, usersCommand, setSearchHintCommand } from './commands/admin';
 import { broadcastCommand }             from './commands/broadcast';
 import { backfillCommand }    from './commands/backfill';
 import { maintenanceCommand } from './commands/maintenance';
 import { unindexCommand }     from './commands/unindex';
+import { randomCommand }      from './commands/random';
+import { randomEditCommand }  from './commands/random_edit';
 
 // Handlers
 import { channelPostHandler, editedChannelPostHandler } from './handlers/channel';
@@ -48,6 +50,7 @@ async function main(): Promise<void> {
   bot.command('top',      topCommand);
   bot.command('featured', featuredCommand);
   bot.command('search',   searchCommand);
+  bot.command('random',   randomCommand);
 
   // ── Admin commands ─────────────────────────────────────────────────────
   bot.command('helpa',     adminOnly(), helpAdminCommand);
@@ -58,6 +61,8 @@ async function main(): Promise<void> {
   bot.command('backfill',     adminOnly(), backfillCommand);
   bot.command('maintenance',  adminOnly(), maintenanceCommand);
   bot.command('unindex',      adminOnly(), unindexCommand);
+  bot.command('random_edit',   adminOnly(), randomEditCommand);
+  bot.command('set_search_hint', adminOnly(), setSearchHintCommand);
 
   // ── Channel indexing ───────────────────────────────────────────────────
   bot.on('channel_post',        channelPostHandler);

@@ -19,6 +19,55 @@ import {
 import { SearchResult } from '../services/cache';
 import { TAG_CATEGORY_PREFIX, isTagCategory } from '../services/search';
 
+// ── Vague query detection ──────────────────────────────────────────────────
+
+/**
+ * Returns true if the query is likely too vague to be useful.
+ * A single common word with no platform/version hint counts as vague.
+ */
+export function isVagueQuery(query: string): boolean {
+  const normalized = query.trim().toLowerCase();
+  // Must be a single token (no spaces = no qualifier added)
+  if (normalized.includes(' ')) return false;
+  // Short words are usually part of a longer typed query — only flag medium+ words
+  if (normalized.length < 4) return false;
+  return true;
+}
+
+const VAGUE_HINT_DEFAULT =
+  `💡 <b>Be more specific for better results!</b>\n\n` +
+  `A single word like <code>{query}</code> can match hundreds of files.\n\n` +
+  `Try adding more details, for example:\n` +
+  `• <code>{query} GBA</code>\n` +
+  `• <code>{query} Fire Red</code>\n` +
+  `• <code>{query} NDS ROM</code>\n\n` +
+  `The more specific you are, the better the match! 🎯\n\n` +
+  `<i>Send a more specific name, or tap below to search anyway:</i>`;
+
+export async function checkVagueAndReply(
+  ctx: Context,
+  query: string,
+): Promise<boolean> {
+  if (!isVagueQuery(query)) return false;
+
+  // Check if admin has set a custom hint message
+  const setting = await Setting.findOne({ key: SETTING_KEYS.VAGUE_SEARCH_HINT }).lean();
+  const template = setting?.value || VAGUE_HINT_DEFAULT;
+  const message  = template.replace(/\{query\}/g, esc(query));
+
+  await ctx.reply(message, {
+    parse_mode: 'HTML',
+    reply_markup: {
+      inline_keyboard: [[
+        { text: `🔍 Search "${query}" anyway`, callback_data: `search_vague:${encodeURIComponent(query)}` },
+        { text: '✏️ Change query',             callback_data: 'search_vague_cancel' },
+      ]],
+    },
+  });
+
+  return true;
+}
+
 export async function searchCommand(ctx: Context): Promise<void> {
   const [channelCategories, tagCategories] = await Promise.all([
     Channel.find({}).sort({ label: 1 }).lean(),

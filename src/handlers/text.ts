@@ -7,7 +7,7 @@ import { Setting, SETTING_KEYS } from '../models/Setting';
 import { cacheService } from '../services/cache';
 import { SearchService } from '../services/search';
 import { getSession, setSession, clearSession } from '../services/session';
-import { sendSearchResults } from '../commands/search';
+import { sendSearchResults, checkVagueAndReply } from '../commands/search';
 import { handleBroadcastPickFormat } from '../commands/broadcast';
 import {
   buildChannelMappingKeyboard,
@@ -16,6 +16,7 @@ import {
 import { logger } from '../utils/logger';
 import { isAdmin } from '../middleware/admin';
 import { handleTagInput, handleForwardedUnindex } from '../commands/unindex';
+import { handleRandExcludeTagInput, handleRandExcludeForward } from '../commands/random_edit';
 import { invalidateBlockedTagsCache } from '../utils/blockedTags';
 import { config } from '../config';
 
@@ -48,6 +49,13 @@ export function registerTextHandler(bot: Telegraf, searchService: SearchService)
         }
         if (text.length > 100) {
           await ctx.reply('⚠️ Search query is too long. Please shorten it.');
+          return;
+        }
+        // Vague query guard — warn but let user override via inline button
+        const wasVague = await checkVagueAndReply(ctx, text);
+        if (wasVague) {
+          // Keep session alive so user can retype or tap "search anyway"
+          setSession(userId, { step: 'search_query', category: session.category, categoryLabel: session.categoryLabel });
           return;
         }
         await sendSearchResults(ctx, searchService, text, session.category, session.categoryLabel);
@@ -221,6 +229,43 @@ export function registerTextHandler(bot: Telegraf, searchService: SearchService)
         return;
       }
 
+      // ── Admin: set custom vague-query hint ───────────────────────────
+      case 'set_search_hint': {
+        if (!isAdmin(userId)) break;
+        if (text.startsWith('/')) break;
+        const hint = text.trim();
+        if (hint.length < 10 || hint.length > 600) {
+          await ctx.reply('⚠️ Hint must be 10–600 characters. Try again:');
+          return;
+        }
+        await Setting.findOneAndUpdate(
+          { key: SETTING_KEYS.VAGUE_SEARCH_HINT },
+          { $set: { value: hint, updatedBy: userId } },
+          { upsert: true }
+        );
+        clearSession(userId);
+        await ctx.reply(
+          `✅ <b>Vague search hint updated!</b>
+
+` +
+          `Users will now see this when they type a single-word query.
+
+` +
+          `<b>Preview:</b>
+${esc(hint.replace(/\{query\}/g, 'Pokemon'))}`,
+          { parse_mode: 'HTML' }
+        );
+        return;
+      }
+
+      // ── Admin: random exclude by tag ──────────────────────────────────
+      case 'rand_exclude_tag': {
+        if (!isAdmin(userId)) break;
+        if (text.startsWith('/')) break;
+        await handleRandExcludeTagInput(ctx, text);
+        return;
+      }
+
       default:
         break;
     }
@@ -236,6 +281,12 @@ export function registerTextHandler(bot: Telegraf, searchService: SearchService)
     if (session.step === 'unindex_by_forward') {
       if (!isAdmin(userId)) return;
       await handleForwardedUnindex(ctx);
+      return;
+    }
+
+    if (session.step === 'rand_exclude_file') {
+      if (!isAdmin(userId)) return;
+      await handleRandExcludeForward(ctx);
       return;
     }
 

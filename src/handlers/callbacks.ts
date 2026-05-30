@@ -31,6 +31,16 @@ import {
   handleUnindexList,
   handleRemoveBlockedTag,
 } from '../commands/unindex';
+import {
+  randomEditCommand,
+  handleRandEditTagPrompt,
+  handleRandEditFilePrompt,
+  handleRandEditTagList,
+  handleRandEditFileList,
+  handleRandRemoveTag,
+  handleRandRemoveId,
+} from '../commands/random_edit';
+import { randomCommand } from '../commands/random';
 import { sendSearchResults } from '../commands/search';
 import { parseCallbackData, escapeMarkdown, normalizeQuery } from '../utils/helpers';
 import { TAG_CATEGORY_PREFIX, isTagCategory } from '../services/search';
@@ -100,13 +110,38 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
           break;
         }
 
-        case 'search_again':
-
         case 'search_again': {
           await ctx.answerCbQuery();
           clearSession(userId);
           const { searchCommand } = await import('../commands/search');
           await searchCommand(ctx);
+          break;
+        }
+
+        // ── Random ───────────────────────────────────────────────────────
+        case 'random_again': {
+          await ctx.answerCbQuery('🎲 Rolling the dice...');
+          await randomCommand(ctx);
+          break;
+        }
+
+        // ── Vague search override ─────────────────────────────────────────
+        case 'search_vague': {
+          // User tapped "search anyway" on a vague query warning
+          const query = decodeURIComponent(payload);
+          await ctx.answerCbQuery('🔍 Searching...');
+          await ctx.deleteMessage().catch(() => {});
+          const sess = getSession(userId);
+          const cat      = sess.step === 'search_query' ? sess.category      : undefined;
+          const catLabel = sess.step === 'search_query' ? sess.categoryLabel : undefined;
+          clearSession(userId);
+          await sendSearchResults(ctx, searchService, query, cat, catLabel);
+          break;
+        }
+
+        case 'search_vague_cancel': {
+          await ctx.answerCbQuery('Ok, type a more specific name');
+          await ctx.deleteMessage().catch(() => {});
           break;
         }
 
@@ -486,6 +521,37 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
           await ctx.answerCbQuery('🔄 Starting backfill...');
           await ctx.deleteMessage().catch(() => {});
           await runBackfill(ctx, bot, payload);
+          break;
+        }
+
+        // ── Admin: Random Edit ───────────────────────────────────────────
+        case 'rand_edit': {
+          if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
+          switch (payload) {
+            case 'tag_prompt':  await handleRandEditTagPrompt(ctx);  break;
+            case 'file_prompt': await handleRandEditFilePrompt(ctx); break;
+            case 'tag_list':    await handleRandEditTagList(ctx);    break;
+            case 'file_list':   await handleRandEditFileList(ctx);   break;
+            case 'back': {
+              await ctx.answerCbQuery();
+              await ctx.deleteMessage().catch(() => {});
+              const { randomEditCommand: cmd } = await import('../commands/random_edit');
+              await cmd(ctx);
+              break;
+            }
+          }
+          break;
+        }
+
+        case 'rand_remove_tag': {
+          if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
+          await handleRandRemoveTag(ctx, payload);
+          break;
+        }
+
+        case 'rand_remove_id': {
+          if (!isAdmin(userId)) { await ctx.answerCbQuery('⛔ Admins only'); return; }
+          await handleRandRemoveId(ctx, payload);
           break;
         }
 

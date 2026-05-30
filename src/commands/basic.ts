@@ -10,39 +10,42 @@ export async function startCommand(ctx: Context): Promise<void> {
 
   await ctx.reply(
     `🎮 <b>Welcome to ROM Finder, ${firstName}!</b>\n\n` +
-    `I search for ROM files across multiple Telegram channels.\n\n` +
-    `<b>Commands:</b>\n` +
+    `I search for ROM files across multiple Telegram channels using fuzzy matching.\n\n` +
+    `<b>What can I do?</b>\n` +
     `🔍 /search – Find a ROM by name\n` +
+    `🎲 /random – Get a surprise random ROM\n` +
     `🏆 /top – Top 5 most searched ROMs\n` +
-    `⭐ /featured – Featured ROMs list\n` +
-    `ℹ️ /about – About this bot\n` +
-    `❓ /help – Command guide\n` +
-    `🏓 /ping – Check bot latency\n\n` +
-    `<i>Tip: Use /search and pick a category for faster results!</i>`,
+    `⭐ /featured – Curated picks from admins\n` +
+    `❓ /help – Full command guide\n\n` +
+    `<i>Tip: Use /search and pick a category for faster, more accurate results!</i>`,
     { parse_mode: 'HTML' }
   );
 }
 
 export async function helpCommand(ctx: Context): Promise<void> {
   await ctx.reply(
-    `📖 <b>ROM Finder – Command Guide</b>\n\n` +
-    `<b>User Commands:</b>\n` +
-    `• /start – Welcome message\n` +
-    `• /search – Search for a ROM (guided)\n` +
-    `• /top – Top 5 most searched ROMs\n` +
-    `• /featured – Admin-curated ROM list\n` +
-    `• /about – Bot info\n` +
-    `• /ping – Check response time\n` +
-    `• /help – This guide\n\n` +
-    `<b>How to Search:</b>\n` +
+    `📖 <b>ROM Finder — Help Guide</b>\n\n` +
+
+    `<b>🔍 Searching for a ROM</b>\n` +
     `1. Send /search\n` +
-    `2. Pick a category (or "Search All")\n` +
-    `3. Type the ROM name\n` +
-    `4. Get the best match + other results!\n\n` +
-    `<b>Tips:</b>\n` +
-    `• Partial names work — "pokemon" finds all Pokémon ROMs\n` +
-    `• Use "I'm not sure" to search all categories\n` +
-    `• Tap ✅ / ❌ after results to improve future searches`,
+    `2. Pick a category from the buttons (or tap <i>Search All</i>)\n` +
+    `3. Type the ROM name — partial names work!\n` +
+    `4. Tap ✅ or ❌ to tell me if the result was right\n\n` +
+
+    `<b>💡 Search Tips</b>\n` +
+    `• Be specific — instead of just <code>Pokemon</code>, try <code>Pokemon Fire Red GBA</code>\n` +
+    `• Typos are OK — fuzzy search handles minor mistakes\n` +
+    `• Not sure which category? Use <i>Search All</i>\n` +
+    `• Your ✅/❌ feedback makes results better for everyone\n\n` +
+
+    `<b>📋 Commands</b>\n` +
+    `• /search – Find a ROM by name\n` +
+    `• /random – Get a surprise random ROM\n` +
+    `• /top – Top 5 most searched ROMs\n` +
+    `• /featured – Admin-curated ROM picks\n` +
+    `• /about – Bot info and version\n` +
+    `• /ping – Check bot response time\n` +
+    `• /help – This guide`,
     { parse_mode: 'HTML' }
   );
 }
@@ -53,7 +56,7 @@ export async function aboutCommand(ctx: Context): Promise<void> {
   await ctx.reply(
     `ℹ️ <b>About ROM Finder</b>\n\n` +
     `A Telegram bot that searches ROM files across multiple channels using fuzzy matching and user-feedback-driven ranking.\n\n` +
-    `📌 <b>Version:</b> 1.0.1\n` +
+    `📌 <b>Version:</b> 1.2.0\n` +
     `👤 <b>Made by:</b> @PokemonBots\n` +
     `🧑‍💻 <b>Owner:</b> ${ownerLink}`,
     {
