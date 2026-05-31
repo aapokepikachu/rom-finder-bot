@@ -118,13 +118,18 @@ export function buildBestMatchMessage(result: SearchResult): string {
   if (result.category) lines.push(`🏷️ Category: <b>${esc(result.category)}</b>`);
   if (result.fileSize) lines.push(`💾 Size: ${esc(formatFileSize(result.fileSize))}`);
 
-  // Show caption but strip @handles and channel links — they clutter the preview
-  const cleanCaption = result.caption
-    .replace(/@[A-Za-z0-9_]+/g, '')          // remove @handles
-    .replace(/https?:\/\/\S+/g, '')        // remove raw URLs
-    .replace(/\n{3,}/g, '\n\n')            // collapse excess newlines
+  // Show cleaned caption — strip emojis, ratings, @handles, URLs for clean display
+  const cleanCaptionDisplay = result.caption
+    .replace(/[\uFE00-\uFE0F]/g, '')              // variation selectors
+    .replace(/[\u2600-\u27BF]/g, '')              // misc symbols
+    .replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '') // surrogate emoji
+    .replace(/\d+\.\d+\s*/g, '')                 // ratings like 4.5
+    .replace(/@[A-Za-z0-9_]+/g, '')                // @handles
+    .replace(/https?:\/\/\S+/g, '')              // URLs
+    .replace(/\n{3,}/g, '\n\n')                  // collapse excess newlines
+    .replace(/\s{2,}/g, ' ')
     .trim();
-  const captionPreview = truncate(cleanCaption, 200);
+  const captionPreview = truncate(cleanCaptionDisplay, 200);
   if (captionPreview) {
     lines.push(`\n📝 <b>Caption:</b>\n${esc(captionPreview)}`);
   }

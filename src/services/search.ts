@@ -8,7 +8,7 @@ import { FailedSearch } from '../models/FailedSearch';
 import { cacheService, SearchResult, CachedResult } from './cache';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { normalizeQuery, buildMessageLink, isFallbackFileName, buildCleanName } from '../utils/helpers';
+import { normalizeQuery, buildMessageLink, isFallbackFileName, buildCleanName, buildCleanCaption } from '../utils/helpers';
 
 export interface SearchOptions {
   query:          string;
@@ -33,12 +33,13 @@ export interface SearchResponse {
 }
 
 interface IndexedMessage {
-  messageId: number;
-  fileName:  string;
-  cleanName: string;   // normalised for Fuse.js — stripped handles/extensions/underscores
-  caption:   string;
-  category?: string;
-  fileSize?: number;
+  messageId:    number;
+  fileName:     string;
+  cleanName:    string;    // normalised for Fuse.js — stripped handles/extensions/underscores
+  cleanCaption: string;    // caption stripped of emojis, ratings, @handles, URLs, hashtags
+  caption:      string;    // raw caption for display
+  category?:    string;
+  fileSize?:    number;
 }
 
 interface MessageIndex {
@@ -130,8 +131,8 @@ export class SearchService {
     // ── Fuse.js fuzzy search (primary threshold) ─────────────────────────
     const fuse = new Fuse(allMessages, {
       keys: [
-        { name: 'cleanName', weight: 0.65 },  // cleaned: no @handles, no ext, spaces not underscores
-        { name: 'caption',   weight: 0.35 },
+        { name: 'cleanName',    weight: 0.50 },  // cleaned filename: no @handles, no ext, no underscores
+        { name: 'cleanCaption', weight: 0.50 },  // cleaned caption: no emojis, ratings, @handles
       ],
       includeScore:       true,
       threshold:          0.55,
@@ -148,8 +149,8 @@ export class SearchService {
     if (fuseResults.length === 0) {
       const looseFuse = new Fuse(allMessages, {
         keys: [
-          { name: 'cleanName', weight: 0.65 },
-          { name: 'caption',   weight: 0.35 },
+          { name: 'cleanName',    weight: 0.50 },
+          { name: 'cleanCaption', weight: 0.50 },
         ],
         includeScore:       true,
         threshold:          0.75,   // much looser — picks up close-ish names
@@ -335,17 +336,18 @@ export class SearchService {
   private async loadFromDB(channelId: string): Promise<IndexedMessage[]> {
     const docs = await ChannelMessage.find(
       { channelId },
-      'messageId fileName cleanName caption category fileSize'
+      'messageId fileName cleanName cleanCaption caption category fileSize'
     ).lean();
     return docs
       .filter((d) => !isFallbackFileName(d.fileName))   // exclude photo/unknown entries
       .map((d) => ({
-        messageId: d.messageId,
-        fileName:  d.fileName,
-        cleanName: d.cleanName || buildCleanName(d.fileName),  // fallback for old indexed docs
-        caption:   d.caption,
-        category:  d.category,
-        fileSize:  d.fileSize,
+        messageId:    d.messageId,
+        fileName:     d.fileName,
+        cleanName:    d.cleanName    || buildCleanName(d.fileName),     // fallback for old docs
+        cleanCaption: d.cleanCaption || buildCleanCaption(d.caption),   // fallback for old docs
+        caption:      d.caption,
+        category:     d.category,
+        fileSize:     d.fileSize,
       }));
   }
 

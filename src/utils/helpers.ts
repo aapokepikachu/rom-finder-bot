@@ -123,31 +123,58 @@ export function sleep(ms: number): Promise<void> {
 
 /**
  * Produces a clean, human-readable display name from a raw filename.
- * Strips @handles, file extensions, converts underscores/dots to spaces,
- * and collapses extra whitespace.
- *
- * Examples:
- *   "Pokemon_Black_Version_DSi_Enhanced_USA_E_@PokemonNdsGba.zip"
- *     → "Pokemon Black Version DSi Enhanced USA E"
- *   "Super_Mario_64_(U)[!].z64"
- *     → "Super Mario 64 (U)[!]"
+ * Handles patterns like:
+ *   "@PokemonNdsGba_1606_Pokemon_Sun_Europe_En,Ja,Fr.3ds" → "Pokemon Sun Europe"
+ *   "Pokemon_Black_Version_DSi_Enhanced_USA_E_@PokemonNdsGba.zip" → "Pokemon Black Version DSi Enhanced USA E"
+ *   "Super_Mario_64_(U)[!].z64" → "Super Mario 64 (U)[!]"
  */
 export function cleanDisplayName(raw: string): string {
   return raw
-    .replace(/\s*@[A-Za-z0-9_]+/g, '')       // strip @handles
-    .replace(/\.[a-zA-Z0-9]{1,5}$/, '')       // strip file extension
-    .replace(/[_]/g, ' ')                      // underscores → spaces
-    .replace(/\s{2,}/g, ' ')                   // collapse multiple spaces
+    // Strip leading @Channel_digits_ prefix (e.g. @PokemonNdsGba_1606_)
+    .replace(/^@[A-Za-z0-9_]+_\d+_/g, '')
+    // Strip any remaining @handles (mid or trailing)
+    .replace(/@[A-Za-z0-9_]+/g, '')
+    // Strip file extension
+    .replace(/\.[a-zA-Z0-9]{1,5}$/, '')
+    // Convert underscores to spaces
+    .replace(/_/g, ' ')
+    // Strip comma-separated 2–3 letter language/region codes (e.g. ",Ja,Fr,De,Es")
+    .replace(/(?:,[A-Z][a-z]{0,2}){2,}/g, '')
+    // Collapse multiple spaces/commas left over
+    .replace(/[,]+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
     .trim();
 }
 
 /**
  * Produces a normalised string for Fuse.js indexing.
- * Strips @handles, extensions, underscores/dots, and lowercases.
- * This is stored as `cleanName` and searched instead of `fileName`.
+ * Strips @handles, extensions, language codes, and lowercases.
+ * Stored as `cleanName` in MongoDB; searched instead of raw `fileName`.
  */
 export function buildCleanName(raw: string): string {
   return cleanDisplayName(raw).toLowerCase();
+}
+
+/**
+ * Cleans a caption for Fuse.js indexing.
+ * Strips emojis, variation selectors, ratings (4.5 ⭐), @handles, URLs, hashtags.
+ * Returns only the meaningful game/file title text.
+ *
+ * Example:
+ *   "Pokemon Sun  4.5 ️️️️  PokemonROM  #3ds  @PokemonNdsGba"
+ *     → "Pokemon Sun PokemonROM"
+ */
+export function buildCleanCaption(caption: string): string {
+  return caption
+    .replace(/[\uFE00-\uFE0F]/g, '')              // variation selectors (️)
+    .replace(/[\u2600-\u27BF]/g, '')              // misc symbols & dingbats
+    .replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '') // surrogate-pair emoji
+    .replace(/\d+\.\d+\s*/g, '')                 // ratings like "4.5 "
+    .replace(/@[A-Za-z0-9_]+/g, '')                // @handles
+    .replace(/https?:\/\/\S+/g, '')              // URLs
+    .replace(/#[A-Za-z0-9_]+/g, '')                // hashtags (kept in caption field separately)
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 /**

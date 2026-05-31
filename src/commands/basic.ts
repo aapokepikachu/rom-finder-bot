@@ -56,7 +56,7 @@ export async function aboutCommand(ctx: Context): Promise<void> {
   await ctx.reply(
     `ℹ️ <b>About ROM Finder</b>\n\n` +
     `A Telegram bot that searches ROM files across multiple channels using fuzzy matching and user-feedback-driven ranking.\n\n` +
-    `📌 <b>Version:</b> 1.2.1\n` +
+    `📌 <b>Version:</b> 1.2.2\n` +
     `👤 <b>Made by:</b> @PokemonBots\n` +
     `🧑‍💻 <b>Owner:</b> ${ownerLink}`,
     {

@@ -9,7 +9,8 @@ export interface IChannelMessage extends Document {
   fileSize?: number;
   fileType?: string;
   fileId?: string;
-  cleanName?: string;  // normalised for search — stripped of @handles, extensions, underscores
+  cleanName?: string;    // normalised for search — stripped of @handles, extensions, underscores
+  cleanCaption?: string; // caption stripped of emojis, ratings, @handles, URLs, hashtags
   receivedAt: Date;
 }
 
@@ -23,7 +24,8 @@ const channelMessageSchema = new Schema<IChannelMessage>(
     fileSize: Number,
     fileType: String,
     fileId: String,
-    cleanName: { type: String, index: true },
+    cleanName:    { type: String, index: true },
+    cleanCaption: { type: String },
     receivedAt: { type: Date, default: Date.now, index: true },
   },
   { timestamps: true }

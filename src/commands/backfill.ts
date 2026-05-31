@@ -3,7 +3,7 @@ import { ChannelMessage } from '../models/ChannelMessage';
 import { Channel } from '../models/Channel';
 import { cacheService } from '../services/cache';
 import { config } from '../config';
-import { extractCategory, sleep, buildCleanName, isFallbackFileName } from '../utils/helpers';
+import { extractCategory, sleep, buildCleanName, buildCleanCaption, isFallbackFileName } from '../utils/helpers';
 import { captionHasBlockedTag } from '../utils/blockedTags';
 import { logger } from '../utils/logger';
 
@@ -185,7 +185,8 @@ async function backfillChannel(
         }
 
         const fileName  = rawName;
-        const cleanName = buildCleanName(rawName);
+        const cleanName    = buildCleanName(rawName);
+        const cleanCaption  = buildCleanCaption(caption);
 
         const category =
           channelMapping?.label ||
@@ -199,6 +200,7 @@ async function backfillChannel(
                 fileName,
                 cleanName,
                 caption,
+                cleanCaption,
                 category,
                 fileSize: fileObj.file_size,
                 fileId:   fileObj.file_id,

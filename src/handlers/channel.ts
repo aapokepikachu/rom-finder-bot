@@ -2,7 +2,7 @@ import { Context } from 'telegraf';
 import { Channel } from '../models/Channel';
 import { ChannelMessage } from '../models/ChannelMessage';
 import { cacheService } from '../services/cache';
-import { extractCategory, buildCleanName, isFallbackFileName } from '../utils/helpers';
+import { extractCategory, buildCleanName, buildCleanCaption, isFallbackFileName } from '../utils/helpers';
 import { captionHasBlockedTag } from '../utils/blockedTags';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -44,7 +44,8 @@ export async function channelPostHandler(ctx: Context): Promise<void> {
   }
 
   const fileName = rawName;
-  const cleanName = buildCleanName(rawName);
+  const cleanName    = buildCleanName(rawName);
+  const cleanCaption  = buildCleanCaption(caption);
 
   const channelMapping = await Channel.findOne({ channelId: chatId }, 'label').lean();
   const category = channelMapping?.label || extractCategory(caption);
@@ -52,7 +53,7 @@ export async function channelPostHandler(ctx: Context): Promise<void> {
   try {
     await ChannelMessage.findOneAndUpdate(
       { channelId: chatId, messageId: post.message_id },
-      { $set: { fileName, cleanName, caption, category, fileSize, fileId, receivedAt: new Date() } },
+      { $set: { fileName, cleanName, caption, cleanCaption, category, fileSize, fileId, receivedAt: new Date() } },
       { upsert: true }
     );
     if (category) cacheService.invalidate(category.toLowerCase());
