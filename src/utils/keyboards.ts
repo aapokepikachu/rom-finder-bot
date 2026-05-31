@@ -44,7 +44,7 @@ export function buildResultKeyboard(
     [{ text: '⬇️ Download', url: bestMatch.messageLink }],
   ];
   if (otherMatches.length > 0) {
-    rows.push([{ text: `📋 ${otherMatches.length} More Result(s) ⬆️`, callback_data: 'show_more_results' }]);
+    rows.push([{ text: `📋 ${otherMatches.length} More Result(s) ⬇️`, callback_data: 'show_more_results' }]);
   }
   if (requestUrl) {
     rows.push([{ text: '📨 Request a ROM', url: requestUrl }]);

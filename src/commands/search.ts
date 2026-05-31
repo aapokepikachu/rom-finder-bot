@@ -16,6 +16,8 @@ import {
   truncate,
   formatFileSize,
   buildMessageLink,
+  cleanDisplayName,
+  parseFileTags,
 } from '../utils/helpers';
 import { SearchResult } from '../services/cache';
 import { TAG_CATEGORY_PREFIX, isTagCategory } from '../services/search';
@@ -102,27 +104,57 @@ export async function searchCommand(ctx: Context): Promise<void> {
 
 export function buildBestMatchMessage(result: SearchResult): string {
   const lines: string[] = [];
+  const displayName = cleanDisplayName(result.fileName);
+  const fileTags    = parseFileTags(result.fileName);
+
   lines.push(`🎮 <b>Best Match Found!</b>\n`);
-  lines.push(`📁 <b>${esc(truncate(result.fileName, 60))}</b>`);
+  lines.push(`📁 <b>${esc(truncate(displayName, 60))}</b>`);
+
+  // Show region/version badges if any were parsed
+  if (fileTags.length > 0) {
+    lines.push(`🔖 ${fileTags.map((t) => `<code>${esc(t)}</code>`).join('  ')}`);
+  }
+
   if (result.category) lines.push(`🏷️ Category: <b>${esc(result.category)}</b>`);
   if (result.fileSize) lines.push(`💾 Size: ${esc(formatFileSize(result.fileSize))}`);
 
-  const captionPreview = truncate(result.caption.replace(/\n{3,}/g, '\n\n'), 300);
+  // Show caption but strip @handles and channel links — they clutter the preview
+  const cleanCaption = result.caption
+    .replace(/@[A-Za-z0-9_]+/g, '')          // remove @handles
+    .replace(/https?:\/\/\S+/g, '')        // remove raw URLs
+    .replace(/\n{3,}/g, '\n\n')            // collapse excess newlines
+    .trim();
+  const captionPreview = truncate(cleanCaption, 200);
   if (captionPreview) {
     lines.push(`\n📝 <b>Caption:</b>\n${esc(captionPreview)}`);
   }
+
   lines.push(`\n🔗 <a href="${result.messageLink}">Open in Channel</a>`);
   return lines.join('\n');
 }
 
+/** Returns a human-readable quality label instead of a raw percentage */
+function scoreLabel(score: number): string {
+  if (score >= 0.80) return '🟢 Great match';
+  if (score >= 0.60) return '🟡 Good match';
+  if (score >= 0.40) return '🟠 Possible match';
+  return '🔴 Weak match';
+}
+
 export function buildOtherMatchesMessage(results: SearchResult[]): string {
   if (results.length === 0) return '';
-  let text = `\n📋 <b>Other Matches (${results.length}):</b>\n\n`;
-  results.forEach((r, i) => {
-    const name  = esc(truncate(r.fileName, 50));
-    const link  = buildMessageLink(r.channelId, r.messageId);
-    const score = Math.round(r.score * 100);
-    text += `${i + 1}. <a href="${link}">${name}</a> — ${score}% match\n`;
+
+  // Only show results with at least a weak signal — hide very low scores
+  const filtered = results.filter((r) => r.score >= 0.05);
+  if (filtered.length === 0) return '';
+
+  let text = `\n📋 <b>Other Matches (${filtered.length}):</b>\n\n`;
+  filtered.forEach((r, i) => {
+    const display = cleanDisplayName(r.fileName);
+    const name    = esc(truncate(display, 50));
+    const link    = buildMessageLink(r.channelId, r.messageId);
+    const label   = scoreLabel(r.score);
+    text += `${i + 1}. <a href="${link}">${name}</a>\n    ${label}\n`;
   });
   return text;
 }

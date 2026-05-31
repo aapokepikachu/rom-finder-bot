@@ -2,7 +2,7 @@ import { Context } from 'telegraf';
 import { Channel } from '../models/Channel';
 import { ChannelMessage } from '../models/ChannelMessage';
 import { cacheService } from '../services/cache';
-import { extractCategory } from '../utils/helpers';
+import { extractCategory, buildCleanName, isFallbackFileName } from '../utils/helpers';
 import { captionHasBlockedTag } from '../utils/blockedTags';
 import { config } from '../config';
 import { logger } from '../utils/logger';
@@ -33,9 +33,18 @@ export async function channelPostHandler(ctx: Context): Promise<void> {
     return;
   }
 
-  const fileName = fileObj.file_name || extractFileNameFromCaption(caption) || `file_${post.message_id}`;
+  const rawName  = fileObj.file_name || extractFileNameFromCaption(caption) || `file_${post.message_id}`;
   const fileSize: number | undefined = fileObj.file_size;
   const fileId: string = fileObj.file_id;
+
+  // Skip photo/audio posts with no real filename — they pollute search results
+  if (isFallbackFileName(rawName)) {
+    logger.debug(`Skipping post ${post.message_id} in ${chatId} — no real filename`);
+    return;
+  }
+
+  const fileName = rawName;
+  const cleanName = buildCleanName(rawName);
 
   const channelMapping = await Channel.findOne({ channelId: chatId }, 'label').lean();
   const category = channelMapping?.label || extractCategory(caption);
@@ -43,7 +52,7 @@ export async function channelPostHandler(ctx: Context): Promise<void> {
   try {
     await ChannelMessage.findOneAndUpdate(
       { channelId: chatId, messageId: post.message_id },
-      { $set: { fileName, caption, category, fileSize, fileId, receivedAt: new Date() } },
+      { $set: { fileName, cleanName, caption, category, fileSize, fileId, receivedAt: new Date() } },
       { upsert: true }
     );
     if (category) cacheService.invalidate(category.toLowerCase());

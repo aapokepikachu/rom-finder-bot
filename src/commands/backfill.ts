@@ -3,7 +3,7 @@ import { ChannelMessage } from '../models/ChannelMessage';
 import { Channel } from '../models/Channel';
 import { cacheService } from '../services/cache';
 import { config } from '../config';
-import { extractCategory, sleep } from '../utils/helpers';
+import { extractCategory, sleep, buildCleanName, isFallbackFileName } from '../utils/helpers';
 import { captionHasBlockedTag } from '../utils/blockedTags';
 import { logger } from '../utils/logger';
 
@@ -169,10 +169,23 @@ async function backfillChannel(
           await sleep(380);
           continue;
         }
-        const fileName =
+        const rawName =
           fileObj.file_name ||
           extractFileNameFromCaption(caption) ||
           `file_${channelId}_${currentId}`;
+
+        // Skip entries with no real filename — they are photos or unknown files
+        if (isFallbackFileName(rawName)) {
+          stats.skipped++;
+          await bot.telegram.deleteMessage(adminChatId, forwarded.message_id).catch(() => {});
+          consecutiveMisses = 0;
+          currentId++;
+          await sleep(380);
+          continue;
+        }
+
+        const fileName  = rawName;
+        const cleanName = buildCleanName(rawName);
 
         const category =
           channelMapping?.label ||
@@ -184,6 +197,7 @@ async function backfillChannel(
             {
               $set: {
                 fileName,
+                cleanName,
                 caption,
                 category,
                 fileSize: fileObj.file_size,

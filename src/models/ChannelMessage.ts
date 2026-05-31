@@ -9,6 +9,7 @@ export interface IChannelMessage extends Document {
   fileSize?: number;
   fileType?: string;
   fileId?: string;
+  cleanName?: string;  // normalised for search — stripped of @handles, extensions, underscores
   receivedAt: Date;
 }
 
@@ -22,6 +23,7 @@ const channelMessageSchema = new Schema<IChannelMessage>(
     fileSize: Number,
     fileType: String,
     fileId: String,
+    cleanName: { type: String, index: true },
     receivedAt: { type: Date, default: Date.now, index: true },
   },
   { timestamps: true }

@@ -118,3 +118,80 @@ export function chunk<T>(arr: T[], size: number): T[][] {
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+// ── Clean name utilities ──────────────────────────────────────────────────────
+
+/**
+ * Produces a clean, human-readable display name from a raw filename.
+ * Strips @handles, file extensions, converts underscores/dots to spaces,
+ * and collapses extra whitespace.
+ *
+ * Examples:
+ *   "Pokemon_Black_Version_DSi_Enhanced_USA_E_@PokemonNdsGba.zip"
+ *     → "Pokemon Black Version DSi Enhanced USA E"
+ *   "Super_Mario_64_(U)[!].z64"
+ *     → "Super Mario 64 (U)[!]"
+ */
+export function cleanDisplayName(raw: string): string {
+  return raw
+    .replace(/\s*@[A-Za-z0-9_]+/g, '')       // strip @handles
+    .replace(/\.[a-zA-Z0-9]{1,5}$/, '')       // strip file extension
+    .replace(/[_]/g, ' ')                      // underscores → spaces
+    .replace(/\s{2,}/g, ' ')                   // collapse multiple spaces
+    .trim();
+}
+
+/**
+ * Produces a normalised string for Fuse.js indexing.
+ * Strips @handles, extensions, underscores/dots, and lowercases.
+ * This is stored as `cleanName` and searched instead of `fileName`.
+ */
+export function buildCleanName(raw: string): string {
+  return cleanDisplayName(raw).toLowerCase();
+}
+
+/**
+ * Returns true if the filename looks like an auto-generated fallback
+ * (e.g. "file_71" or "file_-1001234_71") — these are photos or files
+ * with no real name and should be excluded from search results.
+ */
+export function isFallbackFileName(name: string): boolean {
+  return /^file_[\d_\-]+$/.test(name.trim());
+}
+
+/**
+ * Parses region/version tags from a filename or caption.
+ * Returns an array of short badges like ["USA", "v1.4.1", "DSi Enhanced"]
+ */
+export function parseFileTags(text: string): string[] {
+  const tags: string[] = [];
+
+  // Region codes: (USA), (U), (J), (E), (EUR), (JPN), etc.
+  const regionMatch = text.match(/\(([A-Z]{1,3})\)/g);
+  if (regionMatch) {
+    regionMatch.forEach((m) => {
+      const code = m.replace(/[()]/g, '');
+      const MAP: Record<string, string> = {
+        U: 'USA', USA: 'USA', E: 'EUR', EUR: 'EUR',
+        J: 'JPN', JPN: 'JPN', W: 'World',
+      };
+      tags.push(MAP[code] || code);
+    });
+  }
+
+  // Version numbers: v1.4.1, v2, V3.0
+  const verMatch = text.match(/[Vv]\d+(\.\d+)*/g);
+  if (verMatch) tags.push(...verMatch.map((v) => v.toLowerCase()));
+
+  // Known descriptor words in filename
+  const DESCRIPTORS = [
+    'Enhanced', 'Complete', 'Completed', 'Redux', 'Classic',
+    'EVless', 'DSi', 'Hack', 'ROM Hack', 'Remaster',
+  ];
+  for (const d of DESCRIPTORS) {
+    if (new RegExp(`\\b${d}\\b`, 'i').test(text)) tags.push(d);
+  }
+
+  // Deduplicate preserving order
+  return [...new Set(tags)].slice(0, 4);
+}

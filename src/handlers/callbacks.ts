@@ -155,7 +155,7 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
         }
 
         case 'show_more_results': {
-          await ctx.answerCbQuery('Other matches are shown above ⬆️');
+          await ctx.answerCbQuery('Other matches are shown below ⬇️');
           break;
         }
 
