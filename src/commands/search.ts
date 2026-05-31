@@ -223,13 +223,18 @@ export async function sendSearchResults(
       });
     }
 
-    // Feedback — encode category info so we can record CategoryFeedback on vote
-    const best            = response.bestMatch;
-    const encodedQuery    = encodeURIComponent(query);
-    const encodedCategory = encodeURIComponent(category || 'ALL');
-    const encodedLabel    = encodeURIComponent(categoryLabel || 'All');
-    const feedbackPayload =
-      `${best.channelId}:${best.messageId}:${encodedQuery}:${encodedCategory}:${encodedLabel}`;
+    // Store feedback context in session — callback_data has a 64-byte Telegram limit
+    // so we only pass "yes" or "no" in the button; the rest is retrieved from session.
+    const best = response.bestMatch;
+    const { normalizeQuery } = await import('../utils/helpers');
+    setSession(userId, {
+      step:            'feedback_pending',
+      channelId:       best.channelId,
+      messageId:       best.messageId,
+      normalizedQuery: normalizeQuery(query),
+      category:        category || 'ALL',
+      categoryLabel:   categoryLabel || 'All',
+    });
 
     // If this category has a high miss rate, nudge the user
     let feedbackText =
@@ -243,10 +248,9 @@ export async function sendSearchResults(
 
     await ctx.reply(feedbackText, {
       parse_mode:   'HTML',
-      reply_markup: buildFeedbackKeyboard(feedbackPayload),
+      reply_markup: buildFeedbackKeyboard('pending'),
     });
-
-    clearSession(userId);
+    // Note: session stays as feedback_pending — cleared after vote or next search
   } catch (error) {
     await ctx.telegram.deleteMessage(ctx.chat!.id, loadingMsg.message_id).catch(() => {});
     throw error;

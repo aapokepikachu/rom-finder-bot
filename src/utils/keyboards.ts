@@ -52,11 +52,12 @@ export function buildResultKeyboard(
   return { inline_keyboard: rows };
 }
 
-export function buildFeedbackKeyboard(payload: string): InlineKeyboardMarkup {
+export function buildFeedbackKeyboard(_payload?: string): InlineKeyboardMarkup {
+  // Context is stored in session — callback_data is intentionally short (< 64 bytes)
   return {
     inline_keyboard: [[
-      { text: '✅ Yes, got it!',        callback_data: `feedback:yes:${payload}` },
-      { text: '❌ No, not what I need', callback_data: `feedback:no:${payload}`  },
+      { text: '✅ Yes, got it!',        callback_data: 'feedback:yes' },
+      { text: '❌ No, not what I need', callback_data: 'feedback:no'  },
     ]],
   };
 }
@@ -120,11 +121,12 @@ export function buildAdminSettingsKeyboard(): InlineKeyboardMarkup {
 export function buildDbToolsKeyboard(): InlineKeyboardMarkup {
   return {
     inline_keyboard: [
-      [{ text: '📊 View Usage Stats',    callback_data: 'db:stats'       }],
-      [{ text: '🗑️ Delete All Data',     callback_data: 'db:delete_all'  }],
-      [{ text: '🧹 Clear Search Cache',  callback_data: 'db:clear_cache' }],
-      [{ text: '🔄 Clear Message Index', callback_data: 'db:clear_index' }],
-      [{ text: '❌ Close',                callback_data: 'admin_cancel'   }],
+      [{ text: '📊 View Usage Stats',         callback_data: 'db:stats'         }],
+      [{ text: '🧹 Clear Search Cache',       callback_data: 'db:clear_cache'   }],
+      [{ text: '🔄 Clear Message Index',      callback_data: 'db:clear_index'   }],
+      [{ text: '🗑️ Clean Garbage Entries',   callback_data: 'db:clean_garbage' }],
+      [{ text: '💣 Delete All Data',          callback_data: 'db:delete_all'    }],
+      [{ text: '❌ Close',                     callback_data: 'admin_cancel'     }],
     ],
   };
 }

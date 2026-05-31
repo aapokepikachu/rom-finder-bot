@@ -18,7 +18,15 @@ export type SessionState =
   | { step: 'unindex_by_forward' }
   | { step: 'rand_exclude_tag' }
   | { step: 'rand_exclude_file' }
-  | { step: 'set_search_hint' };
+  | { step: 'set_search_hint' }
+  | {
+      step: 'feedback_pending';
+      channelId:     string;
+      messageId:     number;
+      normalizedQuery: string;
+      category:      string;
+      categoryLabel: string;
+    };
 
 interface SessionEntry {
   state: SessionState;

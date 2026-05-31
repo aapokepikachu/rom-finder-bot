@@ -161,22 +161,21 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
 
         // ── Feedback ─────────────────────────────────────────────────────
         case 'feedback': {
-          // payload format: vote:channelId:messageId:encodedQuery:encodedCategory:encodedLabel
-          // (category and label may be absent for old-format votes — handled safely)
-          const parts          = payload.split(':');
-          const vote           = parts[0];                   // "yes" or "no"
-          const channelId      = parts[1];
-          const messageId      = parseInt(parts[2], 10);
-          const rawQuery       = decodeURIComponent(parts[3] || '');
-          const rawCategory    = decodeURIComponent(parts[4] || 'ALL');
-          const rawLabel       = decodeURIComponent(parts[5] || 'All');
-          const normalized     = normalizeQuery(rawQuery);
-          const gotIt          = vote === 'yes';
+          // payload is just "yes" or "no" — context is read from session
+          // (avoids Telegram's 64-byte callback_data hard limit)
+          const gotIt = payload === 'yes';
 
-          if (!channelId || isNaN(messageId) || !rawQuery) {
-            await ctx.answerCbQuery('⚠️ Invalid feedback data.');
+          const sess = getSession(userId);
+          if (sess.step !== 'feedback_pending') {
+            await ctx.answerCbQuery('⏰ Feedback expired — please search again.');
+            await ctx.editMessageText(
+              '⏰ <b>Feedback session expired.</b>\n\nPlease run /search again.',
+              { parse_mode: 'HTML' }
+            );
             break;
           }
+
+          const { channelId, messageId, normalizedQuery, category, categoryLabel } = sess;
 
           // Get file name for SearchFeedback record
           const msg = await ChannelMessage.findOne(
@@ -184,30 +183,30 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
             'fileName'
           ).lean();
 
-          // Record result-level feedback (for score boost/decay)
+          // Record result-level feedback (for score boost + decay)
           try {
             await SearchFeedback.findOneAndUpdate(
-              { normalizedQuery: normalized, channelId, messageId, userId },
+              { normalizedQuery, channelId, messageId, userId },
               { $set: { gotIt, fileName: msg?.fileName || 'unknown' } },
-              { upsert: true }
-            );
-          } catch (e: any) {
-            if (e.code !== 11000) throw e; // duplicate = already voted, ignore
-          }
-
-          // Record category-level feedback (for miss-rate analytics)
-          try {
-            await CategoryFeedback.findOneAndUpdate(
-              { normalizedQuery: normalized, category: rawCategory, userId },
-              { $set: { helpful: gotIt, categoryLabel: rawLabel } },
               { upsert: true }
             );
           } catch (e: any) {
             if (e.code !== 11000) throw e;
           }
 
-          // Invalidate cache so next search picks up the updated boost
-          cacheService.invalidate(normalized);
+          // Record category-level feedback (for miss-rate analytics)
+          try {
+            await CategoryFeedback.findOneAndUpdate(
+              { normalizedQuery, category, userId },
+              { $set: { helpful: gotIt, categoryLabel } },
+              { upsert: true }
+            );
+          } catch (e: any) {
+            if (e.code !== 11000) throw e;
+          }
+
+          cacheService.invalidate(normalizedQuery);
+          clearSession(userId);
 
           if (gotIt) {
             await ctx.answerCbQuery('✅ Great! Thanks for the feedback!');
@@ -218,12 +217,8 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
           } else {
             await ctx.answerCbQuery("Got it. Let's try again!");
             await ctx.editMessageText(
-              `❌ <b>Sorry about that!</b>
-
-` +
-              `Your feedback is recorded — that result will be ranked lower next time.
-
-` +
+              `❌ <b>Sorry about that!</b>\n\n` +
+              `Your feedback is recorded — that result will be ranked lower next time.\n\n` +
               `Would you like to search again?`,
               {
                 parse_mode: 'HTML',
@@ -338,6 +333,35 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
               );
               break;
             }
+            case 'clean_garbage': {
+              // Count garbage entries first
+              await ctx.answerCbQuery();
+              const garbageCount = await ChannelMessage.countDocuments({
+                fileName: { $regex: /^file_[\d_\-]+$/ }
+              });
+              if (garbageCount === 0) {
+                await ctx.editMessageText(
+                  '✅ <b>No garbage entries found.</b>\n\nYour index is clean!',
+                  { parse_mode: 'HTML', reply_markup: buildDbToolsKeyboard() }
+                );
+                break;
+              }
+              await ctx.editMessageText(
+                `🗑️ <b>Clean Garbage Entries</b>\n\n` +
+                `Found <b>${garbageCount}</b> entries with auto-generated filenames ` +
+                `(e.g. <code>file_71</code>).
+
+` +
+                `These are photos or files with no real name — they clutter search results.\n\n` +
+                `<b>Delete them permanently?</b>`,
+                {
+                  parse_mode: 'HTML',
+                  reply_markup: buildConfirmKeyboard('clean_garbage'),
+                }
+              );
+              break;
+            }
+
             case 'delete_all': {
               await ctx.answerCbQuery();
               await ctx.editMessageText(
@@ -365,6 +389,26 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
           const confirmPayload = firstColon >= 0 ? payload.slice(firstColon + 1) : '';
 
           switch (confirmAction) {
+            case 'clean_garbage': {
+              await ctx.answerCbQuery('🗑️ Cleaning...');
+              const result = await ChannelMessage.deleteMany({
+                fileName: { $regex: /^file_[\d_\-]+$/ }
+              });
+              cacheService.invalidate();
+              const { searchService: svc2 } = await import('../index');
+              svc2.clearIndex();
+              await ctx.editMessageText(
+                `✅ <b>Garbage cleaned!</b>
+
+` +
+                `Deleted <b>${result.deletedCount}</b> entries with no real filename.
+` +
+                `Search index refreshed.`,
+                { parse_mode: 'HTML', reply_markup: buildDbToolsKeyboard() }
+              );
+              break;
+            }
+
             case 'delete_all_data': {
               await ctx.answerCbQuery('🗑️ Deleting...');
               await Promise.all([
