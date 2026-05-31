@@ -51,7 +51,7 @@ import {
   handleFsClearConfirm,
 } from '../commands/failed_searches';
 import { CategoryFeedback } from '../models/CategoryFeedback';
-import { parseCallbackData, escapeMarkdown, normalizeQuery } from '../utils/helpers';
+import { parseCallbackData, escapeMarkdown, normalizeQuery, buildCleanName, buildCleanCaption } from '../utils/helpers';
 import { TAG_CATEGORY_PREFIX, isTagCategory } from '../services/search';
 import { buildTagCategoryListKeyboard }       from '../utils/keyboards';
 import { config } from '../config';
@@ -333,6 +333,25 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
               );
               break;
             }
+            case 'rebuild_clean': {
+              await ctx.answerCbQuery();
+              const total = await ChannelMessage.countDocuments();
+              await ctx.editMessageText(
+                `🔧 <b>Rebuild Clean Fields</b>\n\n` +
+                `This will recompute <b>cleanName</b> and <b>cleanCaption</b> ` +
+                `for all <b>${total}</b> indexed files.\n\n` +
+                `• Fixes search quality for existing documents\n` +
+                `• Does <b>not</b> delete any data\n` +
+                `• Takes ~10–30 seconds\n\n` +
+                `<b>Run it now?</b>`,
+                {
+                  parse_mode: 'HTML',
+                  reply_markup: buildConfirmKeyboard('rebuild_clean'),
+                }
+              );
+              break;
+            }
+
             case 'clean_garbage': {
               // Count garbage entries first
               await ctx.answerCbQuery();
@@ -389,6 +408,85 @@ export function registerCallbackHandlers(bot: Telegraf, searchService: SearchSer
           const confirmPayload = firstColon >= 0 ? payload.slice(firstColon + 1) : '';
 
           switch (confirmAction) {
+            case 'rebuild_clean': {
+              await ctx.answerCbQuery('🔧 Rebuilding...');
+              const statusMsg = await ctx.editMessageText(
+                '🔧 <b>Rebuilding clean fields...</b>\n\n<i>Processing documents...</i>',
+                { parse_mode: 'HTML' }
+              );
+              const chatId   = ctx.chat!.id;
+              const msgId    = (statusMsg as any).message_id;
+
+              let processed  = 0;
+              let errors     = 0;
+              const BATCH    = 50;
+
+              try {
+                const cursor = ChannelMessage.find(
+                  {},
+                  'fileName caption'
+                ).lean().cursor();
+
+                const batch: any[] = [];
+
+                const flushBatch = async () => {
+                  if (batch.length === 0) return;
+                  const ops = batch.map((doc) => ({
+                    updateOne: {
+                      filter: { _id: doc._id },
+                      update: {
+                        $set: {
+                          cleanName:    buildCleanName(doc.fileName),
+                          cleanCaption: buildCleanCaption(doc.caption || ''),
+                        },
+                      },
+                    },
+                  }));
+                  await ChannelMessage.bulkWrite(ops, { ordered: false });
+                  processed += batch.length;
+                  batch.length = 0;
+
+                  if (processed % 100 === 0) {
+                    await ctx.telegram.editMessageText(
+                      chatId, msgId, undefined,
+                      `🔧 <b>Rebuilding clean fields...</b>\n\n` +
+                      `✅ Processed: <b>${processed}</b>`,
+                      { parse_mode: 'HTML' }
+                    ).catch(() => {});
+                  }
+                };
+
+                for await (const doc of cursor) {
+                  batch.push(doc);
+                  if (batch.length >= BATCH) await flushBatch();
+                }
+                await flushBatch(); // final batch
+
+                // Clear in-memory index so next search loads fresh data
+                const { searchService: svc3 } = await import('../index');
+                svc3.clearIndex();
+                cacheService.invalidate();
+
+                await ctx.telegram.editMessageText(
+                  chatId, msgId, undefined,
+                  `✅ <b>Rebuild complete!</b>\n\n` +
+                  `• Documents updated: <b>${processed}</b>\n` +
+                  `• Errors: <b>${errors}</b>\n\n` +
+                  `Search index refreshed. Results are now improved!`,
+                  { parse_mode: 'HTML', reply_markup: buildDbToolsKeyboard() }
+                ).catch(() => {});
+              } catch (err: any) {
+                logger.error('Rebuild clean fields error:', err);
+                await ctx.telegram.editMessageText(
+                  chatId, msgId, undefined,
+                  `❌ <b>Rebuild failed:</b> ${String(err)}\n\n` +
+                  `Processed <b>${processed}</b> before error.`,
+                  { parse_mode: 'HTML', reply_markup: buildDbToolsKeyboard() }
+                ).catch(() => {});
+              }
+              break;
+            }
+
             case 'clean_garbage': {
               await ctx.answerCbQuery('🗑️ Cleaning...');
               const result = await ChannelMessage.deleteMany({

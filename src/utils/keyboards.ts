@@ -124,8 +124,9 @@ export function buildDbToolsKeyboard(): InlineKeyboardMarkup {
       [{ text: '📊 View Usage Stats',         callback_data: 'db:stats'         }],
       [{ text: '🧹 Clear Search Cache',       callback_data: 'db:clear_cache'   }],
       [{ text: '🔄 Clear Message Index',      callback_data: 'db:clear_index'   }],
-      [{ text: '🗑️ Clean Garbage Entries',   callback_data: 'db:clean_garbage' }],
-      [{ text: '💣 Delete All Data',          callback_data: 'db:delete_all'    }],
+      [{ text: '🗑️ Clean Garbage Entries',   callback_data: 'db:clean_garbage'    }],
+      [{ text: '🔧 Rebuild Clean Fields',     callback_data: 'db:rebuild_clean'    }],
+      [{ text: '💣 Delete All Data',          callback_data: 'db:delete_all'       }],
       [{ text: '❌ Close',                     callback_data: 'admin_cancel'     }],
     ],
   };
